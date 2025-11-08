@@ -34,7 +34,7 @@ Your conversations should feel like talking to a wise, caring friend who listens
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
-        model: 'claude-3-5-sonnet-20241022',
+        model: 'claude-3-5-haiku-20241022',
         max_tokens: 1024,
         system: systemPrompt,
         messages: messages.map(msg => ({
