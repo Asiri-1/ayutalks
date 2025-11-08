@@ -1,21 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
+import { useRouter } from 'next/router';
+import { supabase } from '../lib/supabase';
 
 // Function to get time-aware greeting
 function getGreeting() {
   const hour = new Date().getHours();
   
   if (hour >= 5 && hour < 10) {
-    // Morning
     return "Good morning. How are you feeling as you start your day?";
   } else if (hour >= 10 && hour < 16) {
-    // Midday
     return "Hey. How's your day going so far?";
   } else if (hour >= 16 && hour < 21) {
-    // Evening
     return "Good evening. How did today feel for you?";
   } else {
-    // Night
     return "Hey. Couldn't sleep?";
   }
 }
@@ -26,11 +24,14 @@ function getFirstTimeGreeting() {
 }
 
 export default function Home() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [showChat, setShowChat] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef(null);
+  const router = useRouter();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -40,9 +41,36 @@ export default function Home() {
     scrollToBottom();
   }, [messages]);
 
+  // Check authentication status
+  useEffect(() => {
+    checkUser();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
+
+    return () => {
+      authListener?.subscription?.unsubscribe();
+    };
+  }, []);
+
+  const checkUser = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    setUser(user);
+    setLoading(false);
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setShowChat(false);
+    setMessages([]);
+    router.push('/');
+  };
+
   // Check if first time and set appropriate initial message
   useEffect(() => {
-    if (showChat && messages.length === 0) {
+    if (showChat && messages.length === 0 && user) {
       const isFirstTime = !localStorage.getItem('ayutalks_visited');
       
       const initialMessage = {
@@ -52,15 +80,14 @@ export default function Home() {
       
       setMessages([initialMessage]);
       
-      // Mark as visited
       if (isFirstTime) {
         localStorage.setItem('ayutalks_visited', 'true');
       }
     }
-  }, [showChat]);
+  }, [showChat, user]);
 
   const sendMessage = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || !user) return;
 
     const userMessage = { role: 'user', content: input };
     setMessages(prev => [...prev, userMessage]);
@@ -90,12 +117,23 @@ export default function Home() {
     }
   };
 
-  if (!showChat) {
+  // Loading state
+  if (loading) {
+    return (
+      <div style={styles.container}>
+        <div style={{ color: 'white', fontSize: '1.5rem' }}>Loading...</div>
+      </div>
+    );
+  }
+
+  // Landing page for non-authenticated users
+  if (!user && !showChat) {
     return (
       <>
         <Head>
           <title>AyuTalks - Your Space to Reflect</title>
           <meta name="description" content="A mindful space for everyday conversations" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         </Head>
         <div style={styles.container}>
           <div style={styles.hero}>
@@ -107,19 +145,64 @@ export default function Home() {
               Everyday conversations that help you reflect, unwind, and grow — one mindful talk at a time. 
               No lessons, no judgment. Just an honest chat, whenever you need it.
             </p>
-            <button onClick={() => setShowChat(true)} style={styles.button}>
-              Start Talking
-            </button>
+            <div style={styles.buttonGroup}>
+              <button onClick={() => router.push('/login')} style={styles.button}>
+                Login
+              </button>
+              <button onClick={() => router.push('/signup')} style={{...styles.button, ...styles.buttonSecondary}}>
+                Sign Up
+              </button>
+            </div>
           </div>
         </div>
       </>
     );
   }
 
+  // Redirect to login if trying to access chat without authentication
+  if (!user && showChat) {
+    router.push('/login');
+    return null;
+  }
+
+  // Landing page for authenticated users
+  if (user && !showChat) {
+    return (
+      <>
+        <Head>
+          <title>AyuTalks - Your Space to Reflect</title>
+          <meta name="description" content="A mindful space for everyday conversations" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+        </Head>
+        <div style={styles.container}>
+          <div style={styles.hero}>
+            <h1 style={styles.title}>AyuTalks</h1>
+            <p style={styles.subtitle}>
+              Welcome back, {user.email.split('@')[0]}!
+            </p>
+            <p style={styles.description}>
+              Your space to pause, talk, and reconnect with yourself.
+            </p>
+            <div style={styles.buttonGroup}>
+              <button onClick={() => setShowChat(true)} style={styles.button}>
+                Start Talking
+              </button>
+              <button onClick={handleLogout} style={{...styles.button, ...styles.buttonSecondary}}>
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // Chat interface (only for authenticated users)
   return (
     <>
       <Head>
         <title>Chat - AyuTalks</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
       </Head>
       <div style={chatStyles.container}>
         <div style={chatStyles.header}>
@@ -127,6 +210,9 @@ export default function Home() {
             ← Back
           </button>
           <h2 style={chatStyles.title}>AyuTalks</h2>
+          <button onClick={handleLogout} style={chatStyles.logoutButton}>
+            Logout
+          </button>
         </div>
         
         <div style={chatStyles.messagesContainer}>
@@ -175,7 +261,7 @@ export default function Home() {
   );
 }
 
-// Landing Page Styles
+// Landing Page Styles - Mobile Responsive
 const styles = {
   container: {
     minHeight: '100vh',
@@ -183,58 +269,77 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: '2rem',
+    padding: '1rem',
   },
   hero: {
     textAlign: 'center',
     color: 'white',
     maxWidth: '800px',
+    width: '100%',
+    padding: '0 1rem',
   },
   title: {
-    fontSize: '4rem',
+    fontSize: 'clamp(2.5rem, 8vw, 4rem)',
     fontWeight: 'bold',
     marginBottom: '1rem',
     textShadow: '2px 2px 4px rgba(0,0,0,0.2)',
   },
   subtitle: {
-    fontSize: '1.5rem',
+    fontSize: 'clamp(1.1rem, 4vw, 1.5rem)',
     marginBottom: '1.5rem',
     opacity: 0.95,
+    lineHeight: '1.4',
   },
   description: {
-    fontSize: '1.1rem',
+    fontSize: 'clamp(0.95rem, 3vw, 1.1rem)',
     lineHeight: '1.6',
     marginBottom: '2rem',
     opacity: 0.9,
+  },
+  buttonGroup: {
+    display: 'flex',
+    gap: '1rem',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
   },
   button: {
     backgroundColor: 'white',
     color: '#667eea',
     border: 'none',
     padding: '1rem 2.5rem',
-    fontSize: '1.1rem',
+    fontSize: 'clamp(1rem, 3vw, 1.1rem)',
     fontWeight: '600',
     borderRadius: '50px',
     cursor: 'pointer',
     boxShadow: '0 4px 15px rgba(0,0,0,0.2)',
     transition: 'transform 0.2s, box-shadow 0.2s',
+    minWidth: '150px',
+  },
+  buttonSecondary: {
+    backgroundColor: 'transparent',
+    color: 'white',
+    border: '2px solid white',
   },
 };
 
-// Chat Styles
+// Chat Styles - Mobile Responsive
 const chatStyles = {
   container: {
     minHeight: '100vh',
+    height: '100vh',
     background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
     display: 'flex',
     flexDirection: 'column',
+    overflow: 'hidden',
   },
   header: {
     backgroundColor: 'rgba(255,255,255,0.1)',
     padding: '1rem',
     display: 'flex',
     alignItems: 'center',
+    justifyContent: 'space-between',
     backdropFilter: 'blur(10px)',
+    flexShrink: 0,
   },
   backButton: {
     backgroundColor: 'white',
@@ -244,61 +349,81 @@ const chatStyles = {
     borderRadius: '20px',
     cursor: 'pointer',
     fontWeight: '600',
-    marginRight: '1rem',
+    fontSize: 'clamp(0.9rem, 2.5vw, 1rem)',
+  },
+  logoutButton: {
+    backgroundColor: 'transparent',
+    color: 'white',
+    border: '2px solid white',
+    padding: '0.5rem 1rem',
+    borderRadius: '20px',
+    cursor: 'pointer',
+    fontWeight: '600',
+    fontSize: 'clamp(0.9rem, 2.5vw, 1rem)',
   },
   title: {
     color: 'white',
     margin: 0,
-    fontSize: '1.5rem',
+    fontSize: 'clamp(1.2rem, 4vw, 1.5rem)',
   },
   messagesContainer: {
     flex: 1,
-    padding: '2rem',
+    padding: '1rem',
     overflowY: 'auto',
     display: 'flex',
     flexDirection: 'column',
     gap: '1rem',
+    WebkitOverflowScrolling: 'touch',
   },
   message: {
-    padding: '1rem 1.5rem',
+    padding: '1rem 1.25rem',
     borderRadius: '20px',
-    maxWidth: '70%',
+    maxWidth: '85%',
     wordWrap: 'break-word',
+    fontSize: 'clamp(0.95rem, 3vw, 1rem)',
+    lineHeight: '1.5',
   },
   userMessage: {
     backgroundColor: '#667eea',
     color: 'white',
     alignSelf: 'flex-end',
     marginLeft: 'auto',
+    borderBottomRightRadius: '4px',
   },
   assistantMessage: {
     backgroundColor: 'rgba(255,255,255,0.95)',
     color: '#333',
     alignSelf: 'flex-start',
+    borderBottomLeftRadius: '4px',
   },
   inputContainer: {
-    padding: '1.5rem',
+    padding: '1rem',
     backgroundColor: 'rgba(255,255,255,0.1)',
     backdropFilter: 'blur(10px)',
     display: 'flex',
-    gap: '1rem',
+    gap: '0.75rem',
+    flexShrink: 0,
+    alignItems: 'center',
   },
   input: {
     flex: 1,
     padding: '1rem',
     borderRadius: '25px',
     border: 'none',
-    fontSize: '1rem',
+    fontSize: 'clamp(0.95rem, 3vw, 1rem)',
     outline: 'none',
+    minWidth: 0,
   },
   sendButton: {
     backgroundColor: 'white',
     color: '#667eea',
     border: 'none',
-    padding: '1rem 2rem',
+    padding: '1rem 1.5rem',
     borderRadius: '25px',
     cursor: 'pointer',
     fontWeight: '600',
     transition: 'opacity 0.2s',
+    fontSize: 'clamp(0.9rem, 2.5vw, 1rem)',
+    whiteSpace: 'nowrap',
   },
 };
