@@ -30,6 +30,7 @@ export default function Home() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [conversationId, setConversationId] = useState(null);
   const messagesEndRef = useRef(null);
   const router = useRouter();
 
@@ -65,29 +66,100 @@ export default function Home() {
     await supabase.auth.signOut();
     setShowChat(false);
     setMessages([]);
+    setConversationId(null);
     router.push('/');
   };
 
-  // Check if first time and set appropriate initial message
-  useEffect(() => {
-    if (showChat && messages.length === 0 && user) {
-      const isFirstTime = !localStorage.getItem('ayutalks_visited');
-      
-      const initialMessage = {
-        role: 'assistant',
-        content: isFirstTime ? getFirstTimeGreeting() : getGreeting()
-      };
-      
-      setMessages([initialMessage]);
-      
-      if (isFirstTime) {
-        localStorage.setItem('ayutalks_visited', 'true');
+  // Load or create conversation when starting chat
+  const startConversation = async () => {
+    if (!user) return;
+
+    try {
+      // First, check if user already has a conversation
+      const { data: existingConversations, error: fetchError } = await supabase
+        .from('conversations')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('updated_at', { ascending: false })
+        .limit(1);
+
+      if (fetchError) throw fetchError;
+
+      let conversation;
+
+      if (existingConversations && existingConversations.length > 0) {
+        // Load existing conversation
+        conversation = existingConversations[0];
+        console.log('Loading existing conversation:', conversation.id);
+        
+        // Load all messages from this conversation
+        const { data: messageData, error: messagesError } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('conversation_id', conversation.id)
+          .order('timestamp', { ascending: true });
+
+        if (messagesError) throw messagesError;
+
+        const loadedMessages = messageData.map(msg => ({
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          content: msg.content
+        }));
+
+        setMessages(loadedMessages);
+        setConversationId(conversation.id);
+        setShowChat(true);
+      } else {
+        // Create new conversation
+        const { data: newConversation, error: createError } = await supabase
+          .from('conversations')
+          .insert({
+            user_id: user.id,
+            title: 'Chat with Ayu',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select()
+          .single();
+
+        if (createError) throw createError;
+
+        conversation = newConversation;
+        setConversationId(conversation.id);
+        setShowChat(true);
+
+        // Set initial greeting
+        const isFirstTime = !localStorage.getItem('ayutalks_visited');
+        const initialMessage = {
+          role: 'assistant',
+          content: isFirstTime ? getFirstTimeGreeting() : getGreeting()
+        };
+        
+        setMessages([initialMessage]);
+        
+        // Save initial greeting to database
+        await supabase
+          .from('messages')
+          .insert({
+            conversation_id: conversation.id,
+            user_id: user.id,
+            sender: 'assistant',
+            content: initialMessage.content,
+            timestamp: new Date().toISOString()
+          });
+
+        if (isFirstTime) {
+          localStorage.setItem('ayutalks_visited', 'true');
+        }
       }
+    } catch (error) {
+      console.error('Error loading/creating conversation:', error);
+      alert('Failed to start conversation. Please try again.');
     }
-  }, [showChat, user]);
+  };
 
   const sendMessage = async () => {
-    if (!input.trim() || !user) return;
+    if (!input.trim() || !user || !conversationId) return;
 
     const userMessage = { role: 'user', content: input };
     setMessages(prev => [...prev, userMessage]);
@@ -98,7 +170,11 @@ export default function Home() {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [...messages, userMessage] })
+        body: JSON.stringify({ 
+          messages: [...messages, userMessage],
+          conversationId: conversationId,
+          userId: user.id
+        })
       });
 
       const data = await response.json();
@@ -184,7 +260,7 @@ export default function Home() {
               Your space to pause, talk, and reconnect with yourself.
             </p>
             <div style={styles.buttonGroup}>
-              <button onClick={() => setShowChat(true)} style={styles.button}>
+              <button onClick={startConversation} style={styles.button}>
                 Start Talking
               </button>
               <button onClick={handleLogout} style={{...styles.button, ...styles.buttonSecondary}}>
@@ -206,7 +282,7 @@ export default function Home() {
       </Head>
       <div style={chatStyles.container}>
         <div style={chatStyles.header}>
-          <button onClick={() => setShowChat(false)} style={chatStyles.backButton}>
+          <button onClick={() => { setShowChat(false); }} style={chatStyles.backButton}>
             ← Back
           </button>
           <h2 style={chatStyles.title}>AyuTalks</h2>

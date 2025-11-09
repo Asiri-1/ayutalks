@@ -1,2 +1,29 @@
-node_modules
+# Environment variables (IMPORTANT - contains API keys!)
 .env.local
+.env
+
+# Dependencies
+node_modules/
+.npm/
+
+# Next.js build files
+.next/
+out/
+
+# Cache files
+.next/cache/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+
+# Google credentials (sensitive!)
+google-credentials.json
+
+# Content files (large files)
+content/
+
+# Testing files
+test-knowledge.js
