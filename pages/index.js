@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { supabase } from '../lib/supabase';
+import VoiceInput, { speakText } from '../components/VoiceInput';
 
 // Function to get time-aware greeting
 function getGreeting() {
@@ -31,6 +32,8 @@ export default function Home() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+  const [isAyuSpeaking, setIsAyuSpeaking] = useState(false);
+  const [voiceModeActive, setVoiceModeActive] = useState(false);
   const messagesEndRef = useRef(null);
   const router = useRouter();
 
@@ -158,10 +161,11 @@ export default function Home() {
     }
   };
 
-  const sendMessage = async () => {
-    if (!input.trim() || !user || !conversationId) return;
+  const sendMessage = async (voiceTranscript) => {
+    const messageText = voiceTranscript || input;
+    if (!messageText.trim() || !user || !conversationId) return;
 
-    const userMessage = { role: 'user', content: input };
+    const userMessage = { role: 'user', content: messageText };
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
@@ -181,6 +185,18 @@ export default function Home() {
       
       if (data.message) {
         setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
+        
+        // ONLY SPEAK if Voice Mode is ON
+        if (voiceModeActive) {
+          setIsAyuSpeaking(true);
+          speakText(data.message);
+          
+          // Reset speaking state after estimated duration
+          const estimatedDuration = data.message.length * 50; // ~50ms per character
+          setTimeout(() => {
+            setIsAyuSpeaking(false);
+          }, estimatedDuration);
+        }
       }
     } catch (error) {
       console.error('Error:', error);
@@ -312,25 +328,39 @@ export default function Home() {
         </div>
 
         <div style={chatStyles.inputContainer}>
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && !isLoading && sendMessage()}
-            placeholder="Share what's on your mind..."
-            style={chatStyles.input}
-            disabled={isLoading}
-          />
-          <button
-            onClick={sendMessage}
-            style={{
-              ...chatStyles.sendButton,
-              opacity: isLoading || !input.trim() ? 0.5 : 1
-            }}
-            disabled={isLoading || !input.trim()}
-          >
-            Send
-          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', width: '100%', alignItems: 'center' }}>
+            {/* Voice Input with Mode Toggle */}
+            <VoiceInput
+              onTranscript={(transcript) => {
+                sendMessage(transcript);
+              }}
+              disabled={isLoading || isAyuSpeaking}
+              onModeChange={(isActive) => setVoiceModeActive(isActive)}
+            />
+            
+            {/* Text Input and Send Button Row */}
+            <div style={{ display: 'flex', gap: '0.75rem', width: '100%' }}>
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && !isLoading && sendMessage()}
+                placeholder="Type or speak..."
+                style={chatStyles.input}
+                disabled={isLoading || isAyuSpeaking}
+              />
+              <button
+                onClick={() => sendMessage()}
+                style={{
+                  ...chatStyles.sendButton,
+                  opacity: isLoading || !input.trim() ? 0.5 : 1
+                }}
+                disabled={isLoading || !input.trim()}
+              >
+                Send
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </>
@@ -477,9 +507,10 @@ const chatStyles = {
     backgroundColor: 'rgba(255,255,255,0.1)',
     backdropFilter: 'blur(10px)',
     display: 'flex',
+    flexDirection: 'column',
     gap: '0.75rem',
     flexShrink: 0,
-    alignItems: 'center',
+    alignItems: 'stretch',
   },
   input: {
     flex: 1,

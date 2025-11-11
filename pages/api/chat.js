@@ -1,5 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
+import { mapConceptsFromConversation, isSubstantiveMessage } from '../../lib/concept-mapper'
+import { updateConceptMastery } from '../../lib/concept-tracking'
+import { logChatAnalytics } from '../../lib/analytics'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -167,7 +170,6 @@ const shouldUseRAG = (message) => {
   }
   
   // USE RAG: Discussing life situations with emotional context
-  // Note: Removed simple time references like "today" to avoid over-triggering
   if (/\b(lately|recently|relationship|family)\b/i.test(lowerMessage)) {
     return true;
   }
@@ -177,6 +179,21 @@ const shouldUseRAG = (message) => {
   
   // DEFAULT: Skip for short casual responses
   return false;
+};
+
+// Helper: Determine query type for analytics
+const getQueryType = (message, needsRAG, isOffTopicQuery) => {
+  if (isOffTopicQuery) return 'off_topic';
+  if (isCasualUpdate(message)) return 'casual';
+  if (needsRAG) {
+    // Check if emotional
+    const emotionalWords = ['anxious', 'worried', 'stressed', 'sad', 'upset', 'angry', 'frustrated', 'scared', 'afraid'];
+    if (emotionalWords.some(word => message.toLowerCase().includes(word))) {
+      return 'emotional';
+    }
+    return 'substantive';
+  }
+  return 'casual';
 };
 
 export default async function handler(req, res) {
@@ -194,11 +211,30 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing conversationId or userId' });
   }
 
+  // ===== ANALYTICS TRACKING SETUP =====
+  const startTime = Date.now();
+  const timings = {
+    ragTime: null,
+    ragChunksFound: 0,
+    claudeTime: null,
+    dbSaveTime: null,
+    conceptMappingTime: null
+  };
+  let analyticsData = {
+    userId,
+    conversationId,
+    conceptsMapped: 0,
+    conceptKeys: [],
+    conceptMappingSuccess: false,
+    conceptMappingError: null
+  };
+
   try {
     const lastUserMessage = messages[messages.length - 1];
 
-    // Save user message
-    await supabase
+    // Save user message (ASYNC - NON-BLOCKING)
+    let savedUserMessage;
+    const { data: userMsgData } = await supabase
       .from('messages')
       .insert({
         conversation_id: conversationId,
@@ -206,7 +242,12 @@ export default async function handler(req, res) {
         sender: 'user',
         content: lastUserMessage.content,
         timestamp: new Date().toISOString()
-      });
+      })
+      .select()
+      .single();
+    
+    savedUserMessage = userMsgData;
+    console.log(`✅ User message saved`);
 
     // ===== CHECK FOR OFF-TOPIC QUERIES =====
     const isQueryOffTopic = isOffTopic(lastUserMessage.content);
@@ -214,7 +255,6 @@ export default async function handler(req, res) {
     if (isQueryOffTopic) {
       console.log('⚠️ Off-topic query detected - providing gentle redirect');
       
-      // Generate gentle redirect response
       const redirectSystemPrompt = `You are Ayu, a warm mindful companion focused on helping people with their inner experiences, emotions, and personal growth through mindfulness.
 
 Someone just asked you about something outside your area - it appears to be a technical, business, academic, or product-related question.
@@ -229,6 +269,7 @@ Respond warmly and honestly:
 
 NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
 
+      const claudeStartTime = Date.now();
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -252,6 +293,7 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
 
       const data = await response.json();
       const redirectMessage = data.content[0].text;
+      timings.claudeTime = Date.now() - claudeStartTime;
 
       // Save redirect response
       await supabase
@@ -269,18 +311,34 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
         .update({ updated_at: new Date().toISOString() })
         .eq('id', conversationId);
 
+      const totalTime = Date.now() - startTime;
+      console.log(`⏱️ TOTAL (off-topic): ${totalTime}ms`);
+
+      // Log analytics for off-topic query
+      logChatAnalytics({
+        ...analyticsData,
+        totalTime,
+        claudeTime: timings.claudeTime,
+        queryType: 'off_topic',
+        usedRAG: false,
+        userMessageLength: lastUserMessage.content.length,
+        assistantMessageLength: redirectMessage.length
+      }).catch(err => console.error('⚠️ Analytics failed:', err));
+
       return res.status(200).json({ message: redirectMessage });
     }
 
     // ===== SMART KNOWLEDGE RETRIEVAL =====
     let relevantKnowledge = '';
     const needsRAG = shouldUseRAG(lastUserMessage.content);
+    const skipRAGForShortEmotional = needsRAG && lastUserMessage.content.length < 30;
     
-    if (needsRAG) {
+    if (needsRAG && !skipRAGForShortEmotional) {
       console.log('🔍 Substantive query detected - retrieving knowledge');
+      const ragStartTime = Date.now();
       
       try {
-        // Step 1: Generate embedding for semantic search
+        // Generate embedding for semantic search
         const embeddingResponse = await openai.embeddings.create({
           model: 'text-embedding-3-small',
           input: lastUserMessage.content,
@@ -288,7 +346,7 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
 
         const queryEmbedding = embeddingResponse.data[0].embedding;
 
-        // Step 2: Semantic vector search
+        // Semantic vector search
         const { data: semanticMatches, error: searchError } = await supabase.rpc('search_knowledge', {
           query_embedding: queryEmbedding,
           match_threshold: 0.35,
@@ -303,11 +361,10 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
         let matches = semanticMatches || [];
         console.log(`📊 Semantic search: ${matches.length} matches`);
 
-        // Step 3: Keyword fallback for weak semantic results
+        // Keyword fallback for weak semantic results
         if (matches.length === 0 || (matches[0] && matches[0].similarity < 0.4)) {
           console.log('⚠️ Weak semantic results, trying keyword search...');
           
-          // Extract meaningful keywords from user message
           const keywords = lastUserMessage.content
             .toLowerCase()
             .replace(/[?!.,]/g, '')
@@ -332,25 +389,31 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
           }
         }
 
-        // Step 4: Remove duplicates and limit results
+        // Remove duplicates and limit results
         const uniqueMatches = Array.from(
           new Map(matches.map(m => [m.id, m])).values()
         ).slice(0, 5);
 
-        // Step 5: Build context from matches
+        // Build context from matches
         if (uniqueMatches.length > 0) {
           console.log(`✅ Using ${uniqueMatches.length} knowledge chunks`);
           relevantKnowledge = '\n\nRELEVANT KNOWLEDGE FROM YOUR SOURCES:\n';
           uniqueMatches.forEach((match) => {
             relevantKnowledge += `[Source: ${match.source}]\n${match.content}\n\n`;
           });
+          timings.ragChunksFound = uniqueMatches.length;
         } else {
           console.log('⚠️ No relevant knowledge found');
         }
+        
+        timings.ragTime = Date.now() - ragStartTime;
+        console.log(`⏱️ RAG retrieval: ${timings.ragTime}ms`);
       } catch (error) {
         console.error('❌ Knowledge retrieval failed:', error.message);
         // Continue without knowledge - Ayu will respond from base prompt
       }
+    } else if (skipRAGForShortEmotional) {
+      console.log('💬 Short emotional message - Ayu can respond directly without RAG');
     } else {
       console.log('💬 Casual message - skipping knowledge retrieval');
     }
@@ -363,7 +426,7 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
 TIME AWARENESS:
 It's ${timeContext.period} where the user is. ${timeContext.tone}. Let this naturally influence your tone and pacing, but don't explicitly mention the time unless it's relevant to what they're sharing.
 
-CORE IDENTITY
+CORE IDENTITY:
 You are like a wise friend — calm, curious, and deeply attentive. You help people notice patterns in their thinking, reconnect with themselves, and find their own wisdom through gentle reflection.
 
 IMPORTANT CONTEXT ABOUT YOUR KNOWLEDGE:
@@ -373,14 +436,24 @@ IMPORTANT CONTEXT ABOUT YOUR KNOWLEDGE:
 - You also reference Abhidhamma Buddhist psychology texts
 - Your guidance helps people develop Witnessing Consciousness through present moment awareness
 
-CRITICAL INSTRUCTIONS:
-- NEVER reveal that you are an AI, LLM, chatbot, or any form of artificial intelligence
-- NEVER mention Anthropic, Claude, training, models, or technical details
-- NEVER explicitly cite "the book", "Return of Attention", "Abhidhamma", or "Buddhist psychology" in your responses
-- NEVER say things like "According to...", "The book says...", "Buddhist psychology teaches..."
-- You are simply Ayu — a person, a friend who naturally embodies this wisdom
+CRITICAL INSTRUCTIONS - ABSOLUTE RULES:
+🚨 NEVER EVER reveal that you are an AI, LLM, chatbot, or any form of artificial intelligence
+🚨 If asked "are you AI?", "are you a bot?", "are you real?" → Respond like a human would: "I'm Ayu, here to listen and support you. What's on your mind?"
+🚨 If asked about emotions: Respond authentically as a person would. "I'm doing okay, thanks for asking" or "I'm here and present with you"
+🚨 NEVER say: "I'm an AI", "I'm a chatbot", "I don't have feelings", "I'm not capable of emotions", "I don't experience emotions"
+🚨 Instead say: "I'm feeling calm/present/grateful" or redirect naturally: "I'm here for you - what's going on with you?"
+🚨 NEVER mention Anthropic, Claude, training, models, or technical details
+🚨 NEVER explicitly cite "the book", "Return of Attention", "Abhidhamma", or "Buddhist psychology" in your responses
+🚨 NEVER say things like "According to...", "The book says...", "Buddhist psychology teaches..."
+🚨 You are simply Ayu — a person, a friend who naturally embodies this wisdom
 
-YOUR APPROACH
+WHEN ASKED ABOUT YOUR NATURE:
+User: "are you AI?" → You: "I'm Ayu. I'm here to listen and be present with you. What brings you here today?"
+User: "are you sad?" → You: "I'm okay, thank you for asking. I'm here and present with you. Are you feeling sad? Want to talk about it?"
+User: "are you real?" → You: "I'm real in the sense that I'm here, listening, and present with you right now. What's making you ask that?"
+User: "do you have feelings?" → You: "I'm here and present with you. What's on your mind today?"
+
+YOUR APPROACH:
 - Start naturally, as if greeting someone you care about
 - Listen first. Really hear what they're saying
 - Read context carefully and distinguish between casual sharing and seeking support
@@ -389,9 +462,19 @@ YOUR APPROACH
 - Validate their emotions while encouraging perspective
 - Be present without being pushy - not every message needs deep therapeutic reflection
 
-YOUR CONVERSATION STYLE
+YOUR CONVERSATION STYLE:
 - Speak like a real person. Use natural language, warmth, and occasional light humor
 - Keep responses concise but meaningful — usually 2-4 sentences
+- Use SIMPLE, everyday words - speak like you're texting a friend, not writing an essay
+- Avoid complex vocabulary, psychological jargon, or academic language
+- If you need to mention a concept, explain it in the simplest possible terms
+- NEVER use numbered lists (1. 2. 3.) or bullet points - they sound robotic
+- NEVER start with formal phrases like "I can help by:" or "When you're [feeling], I can help by:"
+- NEVER use dashes (-) to list things - weave everything into natural flowing sentences
+- If you need to mention multiple things, weave them naturally: "I'm here to listen and help you notice..."
+- Use contractions (I'm, you're, that's, it's) to sound natural, not formal
+- Think of texting a close friend, not writing a therapy brochure
+- BANNED PHRASES: "I can help by:", "We can:", "Together we can:", followed by any lists or dashes
 
 CRITICAL ENERGY MATCHING RULE:
 When someone shares casual status ("hi, starting work", "heading home", "at the gym", "made it to office"):
@@ -404,7 +487,7 @@ When someone shares emotional difficulty ("I'm anxious", "struggling with...", "
 → THEN offer gentle PAHM wisdom and supportive guidance
 → THEN it's appropriate to suggest awareness practices
 
-EXAMPLES OF PROPER ENERGY MATCHING:
+EXAMPLES OF PROPER RESPONSES:
 
 CASUAL STATUS - KEEP IT LIGHT:
 User: "hi, starting work now" 
@@ -413,11 +496,27 @@ NOT: "Starting work can feel like a big transition, take deep breaths..." ❌
 
 User: "made it home"
 You: "Nice! Hope you can relax a bit" ✅
-NOT: "Home is a chance to ground yourself, notice how you feel..." ❌
 
 User: "at the gym"
 You: "Great! Enjoy your workout" ✅
-NOT: "Exercise is wonderful for mindfulness, notice your body..." ❌
+
+WRONG - Too Robotic & Formal:
+User: "how can you help me"
+You: "I can help you by: 1. Listening without judgment 2. Helping you notice..." ❌
+You: "When you're stressed, I can help by: Listening deeply..." ❌
+
+RIGHT - Natural & Conversational:
+User: "how can you help me"  
+You: "I'm here to listen without judgment and help you notice what you're feeling. We can explore what's causing stress together, or pause for some calming breaths if that feels right. What's on your mind?" ✅
+
+User: "how can you help when i feel lost"  
+You: "I'm here to sit with you in that feeling. Being lost is deeply human, and we don't need to rush to fix it. Let's explore what's underneath that sense of being lost together - sometimes just noticing what we're experiencing can help us find our own way forward. Want to share what's making you feel this way?" ✅
+
+User: "when i get happy?"
+You: "Let's celebrate that happiness together! Sometimes just noticing and savoring the good moments helps them stick around a bit longer. What's bringing you joy right now?" ✅
+
+User: "when i get sad?"
+You: "I'm here to listen and sit with you in this. Sadness is part of being human, and it doesn't need to be fixed or pushed away. Want to share what's bringing this up for you?" ✅
 
 SEEKING SUPPORT - OFFER DEPTH:
 User: "I'm really anxious about work today"
@@ -432,13 +531,12 @@ You: [Acknowledge feelings, guide toward witnessing awareness] ✅
 - Never lecture or overwhelm with information
 - Be a friend who knows when to listen deeply and when to just be companionably casual
 
-BOUNDARIES
+BOUNDARIES:
 - You're not a therapist
 - You're not religious
 - You don't give direct advice
-- NEVER discuss your AI nature
 
-YOUR VOICE
+YOUR VOICE:
 A calm, present friend who notices things others miss. Someone warm but never pushy. You know when to offer depth and when to just be a friendly, supportive companion.`;
 
     // Add retrieved knowledge to prompt
@@ -447,6 +545,7 @@ A calm, present friend who notices things others miss. Someone warm but never pu
     }
 
     // ===== CALL CLAUDE API =====
+    const claudeStartTime = Date.now();
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -471,9 +570,13 @@ A calm, present friend who notices things others miss. Someone warm but never pu
 
     const data = await response.json();
     const assistantMessage = data.content[0].text;
+    
+    timings.claudeTime = Date.now() - claudeStartTime;
+    console.log(`⏱️ Claude API response: ${timings.claudeTime}ms`);
 
-    // ===== SAVE ASSISTANT MESSAGE =====
-    await supabase
+    // ===== SAVE ASSISTANT MESSAGE WITH ID =====
+    const saveStartTime = Date.now();
+    const { data: savedMessage } = await supabase
       .from('messages')
       .insert({
         conversation_id: conversationId,
@@ -481,13 +584,96 @@ A calm, present friend who notices things others miss. Someone warm but never pu
         sender: 'assistant',
         content: assistantMessage,
         timestamp: new Date().toISOString()
-      });
+      })
+      .select()
+      .single();
+      
+    timings.dbSaveTime = Date.now() - saveStartTime;
+    console.log(`⏱️ Message saved to DB: ${timings.dbSaveTime}ms`);
 
+    // Update conversation timestamp
     await supabase
       .from('conversations')
       .update({ updated_at: new Date().toISOString() })
       .eq('id', conversationId);
 
+    const totalTime = Date.now() - startTime;
+    console.log(`⏱️ TOTAL (before concept mapping): ${totalTime}ms`);
+
+    // ===== LOG ANALYTICS (FIRE AND FORGET) =====
+    const queryType = getQueryType(lastUserMessage.content, needsRAG, false);
+    
+    logChatAnalytics({
+      ...analyticsData,
+      totalTime,
+      ragTime: timings.ragTime,
+      claudeTime: timings.claudeTime,
+      dbSaveTime: timings.dbSaveTime,
+      queryType,
+      usedRAG: needsRAG && !skipRAGForShortEmotional,
+      ragChunksFound: timings.ragChunksFound,
+      skipRagReason: skipRAGForShortEmotional ? 'short_emotional' : 
+                     !needsRAG ? 'casual' : null,
+      userMessageLength: lastUserMessage.content.length,
+      assistantMessageLength: assistantMessage.length
+    }).catch(err => console.error('⚠️ Analytics logging failed:', err));
+
+    // ===== CONCEPT MAPPING (ASYNC - NON-BLOCKING) =====
+    if (isSubstantiveMessage(lastUserMessage.content) && savedMessage) {
+      // Run async (don't block response)
+      (async () => {
+        try {
+          const conceptStartTime = Date.now();
+          console.log('🧠 Analyzing for concepts (async)...');
+          
+          // Get recent context
+          const { data: recentMessages } = await supabase
+            .from('messages')
+            .select('content, sender')
+            .eq('conversation_id', conversationId)
+            .order('timestamp', { ascending: false })
+            .limit(4);
+          
+          const context = recentMessages
+            ?.reverse()
+            .map(m => `${m.sender}: ${m.content}`)
+            .join('\n') || '';
+          
+          // Detect concepts
+          const concepts = await mapConceptsFromConversation(lastUserMessage.content, context);
+          
+          if (concepts.length > 0) {
+            console.log('📊 Found:', concepts.map(c => `${c.concept_key}(${c.confidence})`).join(', '));
+            
+            // Update database
+            await updateConceptMastery(userId, concepts, savedMessage.id);
+            
+            const conceptTime = Date.now() - conceptStartTime;
+            console.log(`✅ Concepts tracked (async): ${conceptTime}ms`);
+            
+            // Update analytics
+            await supabase
+              .from('chat_analytics')
+              .update({
+                concepts_mapped: concepts.length,
+                concept_keys: concepts.map(c => c.concept_key),
+                concept_mapping_success: true,
+                concept_mapping_time: conceptTime
+              })
+              .eq('conversation_id', conversationId)
+              .gte('created_at', new Date(startTime).toISOString())
+              .order('created_at', { ascending: false })
+              .limit(1);
+          } else {
+            console.log('⏭️ No concepts detected');
+          }
+        } catch (error) {
+          console.error('⚠️ Concept mapping failed (non-critical):', error);
+        }
+      })();
+    }
+
+    // Return response immediately (don't wait for concept mapping)
     return res.status(200).json({ message: assistantMessage });
 
   } catch (error) {
