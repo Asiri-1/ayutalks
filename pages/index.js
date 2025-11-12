@@ -35,7 +35,7 @@ export default function Home() {
   const [isAyuSpeaking, setIsAyuSpeaking] = useState(false);
   const [voiceModeActive, setVoiceModeActive] = useState(false);
   const messagesEndRef = useRef(null);
-  const voiceModeRef = useRef(false); // REF for immediate access
+  const voiceModeRef = useRef(false);
   const router = useRouter();
 
   const scrollToBottom = () => {
@@ -46,7 +46,6 @@ export default function Home() {
     scrollToBottom();
   }, [messages]);
 
-  // Check authentication status
   useEffect(() => {
     checkUser();
 
@@ -74,12 +73,10 @@ export default function Home() {
     router.push('/');
   };
 
-  // Load or create conversation when starting chat
   const startConversation = async () => {
     if (!user) return;
 
     try {
-      // First, check if user already has a conversation
       const { data: existingConversations, error: fetchError } = await supabase
         .from('conversations')
         .select('*')
@@ -92,11 +89,9 @@ export default function Home() {
       let conversation;
 
       if (existingConversations && existingConversations.length > 0) {
-        // Load existing conversation
         conversation = existingConversations[0];
         console.log('Loading existing conversation:', conversation.id);
         
-        // Load all messages from this conversation
         const { data: messageData, error: messagesError } = await supabase
           .from('messages')
           .select('*')
@@ -114,7 +109,6 @@ export default function Home() {
         setConversationId(conversation.id);
         setShowChat(true);
       } else {
-        // Create new conversation
         const { data: newConversation, error: createError } = await supabase
           .from('conversations')
           .insert({
@@ -132,7 +126,6 @@ export default function Home() {
         setConversationId(conversation.id);
         setShowChat(true);
 
-        // Set initial greeting
         const isFirstTime = !localStorage.getItem('ayutalks_visited');
         const initialMessage = {
           role: 'assistant',
@@ -141,7 +134,6 @@ export default function Home() {
         
         setMessages([initialMessage]);
         
-        // Save initial greeting to database
         await supabase
           .from('messages')
           .insert({
@@ -187,25 +179,30 @@ export default function Home() {
       if (data.message) {
         setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
         
-        // USE REF for immediate, reliable access
         const shouldSpeak = voiceModeRef.current;
-        console.log('🎤 Voice Mode Status (from ref):', shouldSpeak);
-        console.log('📝 Ayu message:', data.message.substring(0, 50));
+        console.log('🎤 Voice Mode Status:', shouldSpeak);
         
         if (shouldSpeak) {
-          console.log('✅ SPEAKING NOW');
+          console.log('✅ SPEAKING - Pausing microphone');
           setIsAyuSpeaking(true);
           
-          // Small delay for proper sequencing
-          setTimeout(() => {
-            speakText(data.message);
-          }, 200);
+          // PAUSE microphone to prevent echo
+          if (window.pauseDeepgram) {
+            window.pauseDeepgram();
+          }
           
-          // Reset speaking state
-          const estimatedDuration = data.message.length * 60;
           setTimeout(() => {
-            setIsAyuSpeaking(false);
-          }, estimatedDuration);
+            speakText(data.message, () => {
+              // CALLBACK when Ayu finishes speaking
+              console.log('✅ Finished - Resuming microphone');
+              setIsAyuSpeaking(false);
+              
+              // RESUME microphone
+              if (window.resumeDeepgram) {
+                window.resumeDeepgram();
+              }
+            });
+          }, 200);
         } else {
           console.log('🔇 Voice mode OFF - silent');
         }
@@ -221,7 +218,6 @@ export default function Home() {
     }
   };
 
-  // Loading state
   if (loading) {
     return (
       <div style={styles.container}>
@@ -230,7 +226,6 @@ export default function Home() {
     );
   }
 
-  // Landing page for non-authenticated users
   if (!user && !showChat) {
     return (
       <>
@@ -263,13 +258,11 @@ export default function Home() {
     );
   }
 
-  // Redirect to login if trying to access chat without authentication
   if (!user && showChat) {
     router.push('/login');
     return null;
   }
 
-  // Landing page for authenticated users
   if (user && !showChat) {
     return (
       <>
@@ -301,7 +294,6 @@ export default function Home() {
     );
   }
 
-  // Chat interface (only for authenticated users)
   return (
     <>
       <Head>
@@ -341,20 +333,18 @@ export default function Home() {
 
         <div style={chatStyles.inputContainer}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', width: '100%', alignItems: 'center' }}>
-            {/* Voice Input with Mode Toggle */}
             <VoiceInput
               onTranscript={(transcript) => {
                 sendMessage(transcript);
               }}
               disabled={isLoading || isAyuSpeaking}
               onModeChange={(isActive) => {
-                console.log('🎤 Voice mode callback received:', isActive);
+                console.log('🎤 Voice mode callback:', isActive);
                 setVoiceModeActive(isActive);
-                voiceModeRef.current = isActive; // Update ref immediately
+                voiceModeRef.current = isActive;
               }}
             />
             
-            {/* Text Input and Send Button Row */}
             <div style={{ display: 'flex', gap: '0.75rem', width: '100%' }}>
               <input
                 type="text"
@@ -383,7 +373,6 @@ export default function Home() {
   );
 }
 
-// Landing Page Styles
 const styles = {
   container: {
     minHeight: '100vh',
@@ -444,7 +433,6 @@ const styles = {
   },
 };
 
-// Chat Styles
 const chatStyles = {
   container: {
     minHeight: '100vh',
