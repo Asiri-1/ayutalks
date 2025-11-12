@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Volume2, VolumeX } from 'lucide-react';
+import { Mic, MicOff, Volume2, VolumeX, RefreshCw } from 'lucide-react';
 import { createClient, LiveTranscriptionEvents } from '@deepgram/sdk';
 
 export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
@@ -8,18 +8,20 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const [isSupported, setIsSupported] = useState(true);
   const [status, setStatus] = useState('');
   const [audioLevel, setAudioLevel] = useState(0);
+  const [needsRestart, setNeedsRestart] = useState(false);
   
   const mediaRecorderRef = useRef(null);
   const deepgramRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
+  const shouldContinueRef = useRef(false);
 
   // Check browser support
   useEffect(() => {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setIsSupported(false);
-      console.error('MediaDevices API not supported');
+      console.error('❌ MediaDevices API not supported');
     }
   }, []);
 
@@ -39,7 +41,9 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
   const startDeepgram = async () => {
     try {
+      console.log('🎤 Starting Deepgram...');
       setStatus('Connecting...');
+      setNeedsRestart(false);
 
       // Get microphone access
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -49,6 +53,8 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
           autoGainControl: true,
         }
       });
+
+      console.log('✅ Microphone access granted');
 
       // Setup audio level monitoring
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -63,8 +69,14 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
       monitorAudioLevel();
 
-      // Initialize Deepgram with API key from environment
-      const deepgram = createClient(process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY);
+      // Initialize Deepgram
+      const apiKey = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY;
+      if (!apiKey) {
+        throw new Error('Deepgram API key not found');
+      }
+
+      console.log('🔑 Connecting to Deepgram...');
+      const deepgram = createClient(apiKey);
       
       const connection = deepgram.listen.live({
         model: 'nova-2',
@@ -96,6 +108,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         };
 
         mediaRecorder.start(250); // Send audio every 250ms
+        console.log('🎙️ Recording started');
       });
 
       // Handle transcription results
@@ -103,7 +116,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         const transcript = data.channel?.alternatives[0]?.transcript;
         
         if (transcript && transcript.trim()) {
-          console.log('📝 Deepgram transcript:', transcript);
+          console.log('📝 Transcript:', transcript);
           onTranscript(transcript);
         }
       });
@@ -112,6 +125,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
       connection.on(LiveTranscriptionEvents.Error, (error) => {
         console.error('❌ Deepgram error:', error);
         setStatus('Error occurred');
+        setNeedsRestart(true);
       });
 
       // Handle connection close
@@ -119,16 +133,30 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         console.log('🔌 Deepgram connection closed');
         setIsListening(false);
         setStatus('');
+        
+        // Auto-restart if still in voice mode
+        if (shouldContinueRef.current) {
+          console.log('♻️ Auto-restarting...');
+          setTimeout(() => {
+            if (shouldContinueRef.current) {
+              startDeepgram();
+            }
+          }, 1000);
+        }
       });
 
     } catch (error) {
-      console.error('Error starting Deepgram:', error);
+      console.error('❌ Error starting Deepgram:', error);
       setStatus('Failed to start');
       setIsListening(false);
+      setNeedsRestart(true);
     }
   };
 
   const stopDeepgram = () => {
+    console.log('🛑 Stopping Deepgram...');
+    shouldContinueRef.current = false;
+    
     // Stop media recorder
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
@@ -152,11 +180,14 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     setIsListening(false);
     setStatus('');
     setAudioLevel(0);
+    setNeedsRestart(false);
   };
 
   const toggleVoiceMode = async () => {
     const newMode = !voiceMode;
+    console.log('🎤 Toggle voice mode:', newMode);
     setVoiceMode(newMode);
+    shouldContinueRef.current = newMode;
     
     if (onModeChange) {
       onModeChange(newMode);
@@ -265,6 +296,17 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         </div>
       )}
 
+      {/* Restart Button */}
+      {voiceMode && needsRestart && (
+        <button
+          onClick={startDeepgram}
+          className="px-4 py-2 bg-yellow-500 text-white rounded-lg text-sm font-medium hover:bg-yellow-600 transition-all flex items-center gap-2"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Restart Voice
+        </button>
+      )}
+
       {/* Status Text */}
       {status && (
         <span className="text-xs text-white font-medium">
@@ -280,20 +322,23 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
       {!voiceMode && (
         <span className="text-xs text-white opacity-75">
-          Professional voice recognition - Works on all devices
+          Tap to enable voice mode - like a phone call
         </span>
       )}
     </div>
   );
 }
 
-// Text-to-Speech function (unchanged)
+// Text-to-Speech function
 export function speakText(text) {
+  console.log('🔊 speakText called:', text.substring(0, 50));
+  
   if (typeof window === 'undefined' || !window.speechSynthesis) {
-    console.warn('Text-to-speech not supported');
+    console.warn('❌ Speech synthesis not supported');
     return;
   }
 
+  // Cancel any ongoing speech
   window.speechSynthesis.cancel();
 
   const utterance = new SpeechSynthesisUtterance(text);
@@ -301,21 +346,41 @@ export function speakText(text) {
   utterance.pitch = 1.0;
   utterance.volume = 1.0;
 
-  const voices = window.speechSynthesis.getVoices();
-  const preferredVoice = voices.find(voice => 
-    voice.name.includes('Female') || 
-    voice.name.includes('Samantha') ||
-    voice.name.includes('Karen') ||
-    voice.lang.includes('en-US')
-  );
-  
-  if (preferredVoice) {
-    utterance.voice = preferredVoice;
+  // Wait for voices to load
+  const speak = () => {
+    const voices = window.speechSynthesis.getVoices();
+    console.log('🎙️ Available voices:', voices.length);
+    
+    const preferredVoice = voices.find(voice => 
+      voice.name.includes('Female') || 
+      voice.name.includes('Samantha') ||
+      voice.name.includes('Karen') ||
+      voice.name.includes('Google') ||
+      voice.lang.includes('en-US') ||
+      voice.lang.includes('en-GB')
+    );
+    
+    if (preferredVoice) {
+      utterance.voice = preferredVoice;
+      console.log('✅ Using voice:', preferredVoice.name);
+    } else {
+      console.log('⚠️ Using default voice');
+    }
+
+    utterance.onstart = () => console.log('🔊 Speaking...');
+    utterance.onend = () => console.log('✅ Speaking finished');
+    utterance.onerror = (e) => console.error('❌ Speech error:', e);
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // Some browsers need time to load voices
+  if (window.speechSynthesis.getVoices().length === 0) {
+    console.log('⏳ Waiting for voices to load...');
+    window.speechSynthesis.onvoiceschanged = () => {
+      speak();
+    };
+  } else {
+    speak();
   }
-
-  utterance.onstart = () => console.log('🔊 Speaking...');
-  utterance.onend = () => console.log('✅ Finished speaking');
-  utterance.onerror = (e) => console.error('❌ Speech error:', e);
-
-  window.speechSynthesis.speak(utterance);
 }

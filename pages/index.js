@@ -186,16 +186,27 @@ export default function Home() {
       if (data.message) {
         setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
         
-        // ONLY SPEAK if Voice Mode is ON
+        // Debug logs
+        console.log('🔊 Voice Mode Active:', voiceModeActive);
+        console.log('📝 Ayu\'s message:', data.message.substring(0, 50));
+        
+        // SPEAK when Voice Mode is ON
         if (voiceModeActive) {
+          console.log('✅ Making Ayu speak...');
           setIsAyuSpeaking(true);
-          speakText(data.message);
+          
+          // Small delay to ensure proper sequencing
+          setTimeout(() => {
+            speakText(data.message);
+          }, 100);
           
           // Reset speaking state after estimated duration
-          const estimatedDuration = data.message.length * 50; // ~50ms per character
+          const estimatedDuration = data.message.length * 60; // ~60ms per character
           setTimeout(() => {
             setIsAyuSpeaking(false);
           }, estimatedDuration);
+        } else {
+          console.log('🔇 Voice mode OFF - silent');
         }
       }
     } catch (error) {
@@ -335,7 +346,10 @@ export default function Home() {
                 sendMessage(transcript);
               }}
               disabled={isLoading || isAyuSpeaking}
-              onModeChange={(isActive) => setVoiceModeActive(isActive)}
+              onModeChange={(isActive) => {
+                console.log('🎤 Voice mode changed to:', isActive);
+                setVoiceModeActive(isActive);
+              }}
             />
             
             {/* Text Input and Send Button Row */}
