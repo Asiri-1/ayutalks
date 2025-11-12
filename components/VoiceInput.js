@@ -1,22 +1,27 @@
 import { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Volume2, VolumeX, RefreshCw } from 'lucide-react';
+import { Mic, MicOff, Volume2, VolumeX } from 'lucide-react';
+import { createClient, LiveTranscriptionEvents } from '@deepgram/sdk';
 
 export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const [voiceMode, setVoiceMode] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSupported, setIsSupported] = useState(true);
+  const [status, setStatus] = useState('');
   const [audioLevel, setAudioLevel] = useState(0);
-  const [volumeStatus, setVolumeStatus] = useState('');
-  const [needsRestart, setNeedsRestart] = useState(false);
   
-  const recognitionRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const deepgramRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
-  const micStreamRef = useRef(null);
   const animationFrameRef = useRef(null);
-  const shouldContinueRef = useRef(false);
-  const restartTimeoutRef = useRef(null);
-  const lastRestartRef = useRef(0);
+
+  // Check browser support
+  useEffect(() => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setIsSupported(false);
+      console.error('MediaDevices API not supported');
+    }
+  }, []);
 
   // Monitor audio levels
   const monitorAudioLevel = () => {
@@ -29,23 +34,23 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     const normalizedLevel = Math.min(100, (average / 128) * 100);
     
     setAudioLevel(normalizedLevel);
-
-    if (normalizedLevel < 15) {
-      setVolumeStatus('low');
-    } else if (normalizedLevel < 50) {
-      setVolumeStatus('good');
-    } else {
-      setVolumeStatus('high');
-    }
-
     animationFrameRef.current = requestAnimationFrame(monitorAudioLevel);
   };
 
-  const startAudioMonitoring = async () => {
+  const startDeepgram = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      micStreamRef.current = stream;
+      setStatus('Connecting...');
 
+      // Get microphone access
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+
+      // Setup audio level monitoring
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
       audioContextRef.current = audioContext;
 
@@ -57,228 +62,139 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
       source.connect(analyser);
 
       monitorAudioLevel();
+
+      // Initialize Deepgram with API key from environment
+      const deepgram = createClient(process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY);
+      
+      const connection = deepgram.listen.live({
+        model: 'nova-2',
+        language: 'en-US',
+        smart_format: true,
+        punctuate: true,
+        interim_results: false,
+      });
+
+      deepgramRef.current = connection;
+
+      // Handle connection open
+      connection.on(LiveTranscriptionEvents.Open, () => {
+        console.log('✅ Deepgram connection opened');
+        setStatus('Listening...');
+        setIsListening(true);
+
+        // Create MediaRecorder to send audio to Deepgram
+        const mediaRecorder = new MediaRecorder(stream, {
+          mimeType: 'audio/webm',
+        });
+
+        mediaRecorderRef.current = mediaRecorder;
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0 && connection.getReadyState() === 1) {
+            connection.send(event.data);
+          }
+        };
+
+        mediaRecorder.start(250); // Send audio every 250ms
+      });
+
+      // Handle transcription results
+      connection.on(LiveTranscriptionEvents.Transcript, (data) => {
+        const transcript = data.channel?.alternatives[0]?.transcript;
+        
+        if (transcript && transcript.trim()) {
+          console.log('📝 Deepgram transcript:', transcript);
+          onTranscript(transcript);
+        }
+      });
+
+      // Handle errors
+      connection.on(LiveTranscriptionEvents.Error, (error) => {
+        console.error('❌ Deepgram error:', error);
+        setStatus('Error occurred');
+      });
+
+      // Handle connection close
+      connection.on(LiveTranscriptionEvents.Close, () => {
+        console.log('🔌 Deepgram connection closed');
+        setIsListening(false);
+        setStatus('');
+      });
+
     } catch (error) {
-      console.error('Error accessing microphone:', error);
+      console.error('Error starting Deepgram:', error);
+      setStatus('Failed to start');
+      setIsListening(false);
     }
   };
 
-  const stopAudioMonitoring = () => {
+  const stopDeepgram = () => {
+    // Stop media recorder
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+    }
+
+    // Close Deepgram connection
+    if (deepgramRef.current) {
+      deepgramRef.current.finish();
+      deepgramRef.current = null;
+    }
+
+    // Stop audio monitoring
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
-    }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach(track => track.stop());
     }
     if (audioContextRef.current) {
       audioContextRef.current.close();
     }
+
+    setIsListening(false);
+    setStatus('');
     setAudioLevel(0);
-    setVolumeStatus('');
   };
 
-  const startRecognition = () => {
-    if (!recognitionRef.current || !shouldContinueRef.current) return;
-
-    // Prevent rapid restarts (debounce)
-    const now = Date.now();
-    if (now - lastRestartRef.current < 1000) {
-      console.log('Debouncing restart...');
-      return;
-    }
-    lastRestartRef.current = now;
-
-    try {
-      setNeedsRestart(false);
-      recognitionRef.current.start();
-      console.log('🎤 Recognition started');
-    } catch (error) {
-      if (error.message.includes('already started')) {
-        console.log('Recognition already running');
-      } else {
-        console.error('Error starting recognition:', error);
-        setNeedsRestart(true);
-      }
-    }
-  };
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      
-      if (!SpeechRecognition) {
-        setIsSupported(false);
-        console.warn('Speech recognition not supported in this browser');
-        return;
-      }
-
-      const recognition = new SpeechRecognition();
-      
-      // IMPORTANT: Keep continuous true for longer sessions
-      recognition.continuous = true;
-      recognition.interimResults = false;
-      recognition.lang = 'en-US';
-      recognition.maxAlternatives = 1;
-
-      recognition.onstart = () => {
-        console.log('🎤 Listening started');
-        setIsListening(true);
-        setNeedsRestart(false);
-        startAudioMonitoring();
-      };
-
-      recognition.onresult = (event) => {
-        const transcript = event.results[event.results.length - 1][0].transcript;
-        console.log('📝 Transcribed:', transcript);
-        if (transcript.trim()) {
-          onTranscript(transcript);
-        }
-      };
-
-      recognition.onerror = (event) => {
-        console.error('❌ Speech recognition error:', event.error);
-        
-        // Don't treat 'no-speech' as a fatal error
-        if (event.error === 'no-speech') {
-          console.log('No speech detected, continuing...');
-          return;
-        }
-
-        // For other errors, mark as needing restart
-        if (event.error === 'network' || event.error === 'aborted') {
-          setNeedsRestart(true);
-          setIsListening(false);
-          stopAudioMonitoring();
-        }
-      };
-
-      recognition.onend = () => {
-        console.log('🎤 Recognition ended');
-        setIsListening(false);
-        stopAudioMonitoring();
-        
-        // Auto-restart if still in voice mode
-        if (shouldContinueRef.current && voiceMode) {
-          console.log('Auto-restarting recognition...');
-          
-          // Clear any existing restart timeout
-          if (restartTimeoutRef.current) {
-            clearTimeout(restartTimeoutRef.current);
-          }
-          
-          // Restart after a short delay
-          restartTimeoutRef.current = setTimeout(() => {
-            if (shouldContinueRef.current) {
-              startRecognition();
-            }
-          }, 300);
-        }
-      };
-
-      recognitionRef.current = recognition;
-    }
-
-    return () => {
-      if (restartTimeoutRef.current) {
-        clearTimeout(restartTimeoutRef.current);
-      }
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          console.log('Recognition already stopped');
-        }
-      }
-      stopAudioMonitoring();
-    };
-  }, [onTranscript, voiceMode]);
-
-  // Toggle Voice Mode
-  const toggleVoiceMode = () => {
+  const toggleVoiceMode = async () => {
     const newMode = !voiceMode;
     setVoiceMode(newMode);
-    shouldContinueRef.current = newMode;
     
     if (onModeChange) {
       onModeChange(newMode);
     }
 
     if (newMode) {
-      // Entering voice mode - start listening
-      startRecognition();
+      await startDeepgram();
     } else {
-      // Exiting voice mode - stop listening
-      shouldContinueRef.current = false;
-      if (restartTimeoutRef.current) {
-        clearTimeout(restartTimeoutRef.current);
-      }
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          console.log('Recognition already stopped');
-        }
-      }
-      stopAudioMonitoring();
-      setNeedsRestart(false);
+      stopDeepgram();
     }
   };
 
-  // Manual restart function
-  const manualRestart = () => {
-    console.log('Manual restart triggered');
-    shouldContinueRef.current = true;
-    startRecognition();
-  };
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopDeepgram();
+    };
+  }, []);
 
   if (!isSupported) {
     return (
       <div className="text-xs text-gray-500 italic p-2 bg-gray-100 rounded">
-        ⚠️ Voice not supported in this browser. Try Chrome on Android.
+        ⚠️ Microphone access not supported in this browser
       </div>
     );
   }
 
-  const getStatusDisplay = () => {
-    if (!isListening && !needsRestart) return null;
-
-    if (needsRestart) {
-      return {
-        color: 'text-yellow-600',
-        bg: 'bg-yellow-50',
-        message: '⚠️ Voice stopped. Tap to restart',
-        icon: <RefreshCw className="w-4 h-4" />,
-        action: true
-      };
-    }
-
-    switch (volumeStatus) {
-      case 'low':
-        return {
-          color: 'text-red-500',
-          bg: 'bg-red-50',
-          message: '🔴 Speak louder or come closer',
-          icon: <VolumeX className="w-4 h-4" />
-        };
-      case 'good':
-        return {
-          color: 'text-green-500',
-          bg: 'bg-green-50',
-          message: '✅ Good volume',
-          icon: <Volume2 className="w-4 h-4" />
-        };
-      case 'high':
-        return {
-          color: 'text-orange-500',
-          bg: 'bg-orange-50',
-          message: '⚠️ Very loud (but okay)',
-          icon: <Volume2 className="w-4 h-4" />
-        };
-      default:
-        return null;
-    }
+  const getVolumeColor = () => {
+    if (audioLevel < 20) return 'bg-red-500';
+    if (audioLevel < 60) return 'bg-green-500';
+    return 'bg-orange-500';
   };
 
-  const statusDisplay = getStatusDisplay();
+  const getVolumeMessage = () => {
+    if (audioLevel < 20) return '🔴 Speak louder';
+    if (audioLevel < 60) return '✅ Good volume';
+    return '⚠️ Very loud';
+  };
 
   return (
     <div className="flex flex-col items-center gap-2 w-full">
@@ -294,7 +210,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
           }
           ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'}
         `}
-        title={voiceMode ? 'Exit Voice Mode' : 'Enter Voice Mode'}
       >
         <div className="flex items-center gap-2">
           {voiceMode ? (
@@ -311,7 +226,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         </div>
       </button>
 
-      {/* Audio Level Indicator - Only show when in voice mode and listening */}
+      {/* Audio Level Indicator */}
       {voiceMode && isListening && (
         <div className="w-full max-w-xs">
           {/* Volume Bars */}
@@ -319,20 +234,13 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
             {[...Array(10)].map((_, i) => {
               const barThreshold = (i + 1) * 10;
               const isActive = audioLevel >= barThreshold;
-              
-              let barColor = 'bg-gray-300';
-              if (isActive) {
-                if (i < 3) barColor = 'bg-red-500';
-                else if (i < 7) barColor = 'bg-green-500';
-                else barColor = 'bg-orange-500';
-              }
 
               return (
                 <div
                   key={i}
                   className={`
                     w-2 rounded-t transition-all duration-100
-                    ${barColor}
+                    ${isActive ? getVolumeColor() : 'bg-gray-300'}
                   `}
                   style={{
                     height: `${(i + 1) * 8}%`,
@@ -344,42 +252,35 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
           </div>
 
           {/* Status Message */}
-          {statusDisplay && (
-            <div 
-              className={`
-                flex items-center justify-center gap-2 px-3 py-2 rounded-lg
-                ${statusDisplay.bg} ${statusDisplay.color}
-                text-xs font-medium
-                ${statusDisplay.action ? 'cursor-pointer hover:opacity-80' : ''}
-              `}
-              onClick={statusDisplay.action ? manualRestart : undefined}
-            >
-              {statusDisplay.icon}
-              <span>{statusDisplay.message}</span>
-            </div>
-          )}
+          <div className={`
+            flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+            ${audioLevel < 20 ? 'bg-red-50 text-red-500' : 
+              audioLevel < 60 ? 'bg-green-50 text-green-500' : 
+              'bg-orange-50 text-orange-500'}
+            text-xs font-medium
+          `}>
+            {audioLevel < 20 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            <span>{getVolumeMessage()}</span>
+          </div>
         </div>
       )}
 
-      {/* Manual Restart Button - Show if needs restart */}
-      {voiceMode && needsRestart && (
-        <button
-          onClick={manualRestart}
-          className="px-4 py-2 bg-yellow-500 text-white rounded-lg text-sm font-medium hover:bg-yellow-600 transition-all flex items-center gap-2"
-        >
-          <RefreshCw className="w-4 h-4" />
-          Restart Voice
-        </button>
+      {/* Status Text */}
+      {status && (
+        <span className="text-xs text-white font-medium">
+          {status}
+        </span>
       )}
 
-      {/* Status Text */}
-      {voiceMode ? (
+      {voiceMode && isListening && (
         <span className="text-xs text-white font-medium animate-pulse">
           🎤 Listening... Speak naturally
         </span>
-      ) : (
+      )}
+
+      {!voiceMode && (
         <span className="text-xs text-white opacity-75">
-          Tap to enable hands-free voice mode
+          Professional voice recognition - Works on all devices
         </span>
       )}
     </div>
