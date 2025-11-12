@@ -13,7 +13,12 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 })
 
-// Get time-aware context for Ayu's responses
+function getStartOfToday() {
+  const now = new Date();
+  const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  return startOfDay.toISOString();
+}
+
 const getTimeContext = () => {
   const hour = new Date().getHours();
   
@@ -40,36 +45,23 @@ const getTimeContext = () => {
   }
 };
 
-// Detect off-topic queries outside Ayu's domain
 const isOffTopic = (message) => {
   const lowerMessage = message.toLowerCase();
   
-  // Topics clearly outside Ayu's domain
   const offTopicIndicators = [
-    // Business/Finance
     /\b(accounting|bookkeeping|balance sheet|profit|loss|revenue|invoice|tax|audit)\b/i,
     /\b(marketing|seo|advertising|campaign|conversion rate|roi|kpi)\b/i,
     /\b(sales|pipeline|crm|lead generation|cold call)\b/i,
     /\b(stock market|trading|investment|portfolio|dividends)\b/i,
-    
-    // Technical/Programming
     /\b(javascript|python|java|code|programming|bug|syntax|algorithm|database|api|sql)\b/i,
     /\b(deploy|server|hosting|docker|kubernetes|git|github)\b/i,
     /\b(html|css|react|node|framework|library)\b/i,
-    
-    // Legal/Medical (specific advice)
     /\b(lawsuit|lawyer|legal advice|contract|attorney|sue|litigation)\b/i,
     /\b(diagnose|diagnosis|prescription|medication|dosage|treatment plan)\b/i,
-    
-    // Academic subjects (non-psychology/philosophy)
     /\b(calculus|algebra|physics|chemistry|biology|trigonometry|geometry)\b/i,
     /\b(solve.*equation|formula.*calculate)\b/i,
-    
-    // Shopping/Products (specific recommendations)
     /\b(which phone|which laptop|best car|recommend.*product|buy.*laptop|buy.*phone)\b/i,
     /\b(price.*compare|cheaper.*alternative|best deal)\b/i,
-    
-    // Entertainment factual queries
     /\b(movie.*plot|spoiler|who wins|game.*walkthrough|cheat code)\b/i,
     /\b(recipe for|how to cook|baking temperature)\b/i,
   ];
@@ -77,57 +69,41 @@ const isOffTopic = (message) => {
   return offTopicIndicators.some(pattern => pattern.test(lowerMessage));
 };
 
-// Detect casual status updates that don't need therapeutic response
 const isCasualUpdate = (message) => {
   const lowerMessage = message.toLowerCase().trim();
   const length = message.trim().length;
   
-  // Check for emotional distress words first - these override casual detection
   const distressWords = /\b(anxious|worried|stressed|sad|upset|angry|frustrated|scared|afraid|depressed|lonely|hurt|terrible|awful|miserable|overwhelmed|exhausted|drained|struggling|nervous|tense|panicked|hopeless|helpless)\b/i;
   if (distressWords.test(lowerMessage)) {
-    return false; // Not casual, needs support
+    return false;
   }
   
-  // Very short messages without distress are casual
   if (length < 25) {
     return true;
   }
   
-  // Expanded casual patterns - more comprehensive
   const casualPatterns = [
-    // Location/movement status
     /\b(just|i'm|im|i am)\s+(at|in|on|going to|headed to|heading to|arrived at|got to|got into|getting to|starting|beginning)/i,
     /\b(made it|got here|arrived|heading out|on my way|leaving|about to)\b/i,
-    
-    // Work-related status updates (without emotional context)
     /\b(start(ing)?|begin(ning)?)\s+(work|my day|the day|my morning|today)/i,
     /\b(plan(ning)? to|going to|about to)\s+(start|begin|work|leave|head out)/i,
-    
-    // Simple acknowledgments and reactions
     /^(good|nice|great|cool|awesome|sweet|fine|ok|okay|alright|sure|yeah|yep|nope|no worries|all good|sounds good)$/i,
-    
-    // Greetings with status (like "hi, starting work")
     /^(hi|hello|hey)[,.]?\s+.*(starting|heading|going|plan|at|in|got)/i,
-    
-    // Location statements
     /\b(i'm|im|i am)\s+(here|there|home|back|out|at the|in the|at my)/i,
   ];
   
   return casualPatterns.some(pattern => pattern.test(lowerMessage));
 };
 
-// Smart RAG Detection - Use knowledge base when substantive guidance is needed
 const shouldUseRAG = (message) => {
   const lowerMessage = message.toLowerCase().trim();
   const length = message.trim().length;
   
-  // SKIP: Casual status updates (no therapeutic need)
   if (isCasualUpdate(message)) {
     console.log('📍 Casual status update detected - skipping RAG');
     return false;
   }
   
-  // SKIP: Pure greetings/acknowledgments (no substance)
   const pureGreetings = [
     'hi', 'hello', 'hey', 'hi there', 'hello there',
     'thanks', 'thank you', 'ok', 'okay', 'got it', 'sure',
@@ -136,17 +112,14 @@ const shouldUseRAG = (message) => {
   
   if (pureGreetings.includes(lowerMessage)) return false;
   
-  // USE RAG: Questions (need grounded answers)
   if (/\b(what|why|how|when|who|where|which|can|could|would|should|is|are|do|does)\b.*\?/i.test(message)) {
     return true;
   }
   
-  // USE RAG: Key meditation/mindfulness topics
   if (/\b(pahm|meditation|meditate|mindfulness|mindful|awareness|aware|practice|consciousness|abhidhamma|witnessing|buddha|dhamma)\b/i.test(lowerMessage)) {
     return true;
   }
   
-  // USE RAG: Emotional/mental state sharing (needs wisdom-based guidance)
   const emotionalIndicators = [
     /\b(feel|feeling|felt|emotion|mood)\b/i,
     /\b(stress|stressed|anxious|anxiety|worry|worried|fear|afraid)\b/i,
@@ -164,29 +137,23 @@ const shouldUseRAG = (message) => {
     return true;
   }
   
-  // USE RAG: Seeking guidance/advice
   if (/\b(help|advice|guide|teach|show|tell me|explain|understand|learn)\b/i.test(lowerMessage)) {
     return true;
   }
   
-  // USE RAG: Discussing life situations with emotional context
   if (/\b(lately|recently|relationship|family)\b/i.test(lowerMessage)) {
     return true;
   }
   
-  // USE RAG: Substantive messages (usually need reflection)
   if (length > 50) return true;
   
-  // DEFAULT: Skip for short casual responses
   return false;
 };
 
-// Helper: Determine query type for analytics
 const getQueryType = (message, needsRAG, isOffTopicQuery) => {
   if (isOffTopicQuery) return 'off_topic';
   if (isCasualUpdate(message)) return 'casual';
   if (needsRAG) {
-    // Check if emotional
     const emotionalWords = ['anxious', 'worried', 'stressed', 'sad', 'upset', 'angry', 'frustrated', 'scared', 'afraid'];
     if (emotionalWords.some(word => message.toLowerCase().includes(word))) {
       return 'emotional';
@@ -211,7 +178,6 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing conversationId or userId' });
   }
 
-  // ===== ANALYTICS TRACKING SETUP =====
   const startTime = Date.now();
   const timings = {
     ragTime: null,
@@ -232,7 +198,6 @@ export default async function handler(req, res) {
   try {
     const lastUserMessage = messages[messages.length - 1];
 
-    // Save user message (ASYNC - NON-BLOCKING)
     let savedUserMessage;
     const { data: userMsgData } = await supabase
       .from('messages')
@@ -249,7 +214,6 @@ export default async function handler(req, res) {
     savedUserMessage = userMsgData;
     console.log(`✅ User message saved`);
 
-    // ===== CHECK FOR OFF-TOPIC QUERIES =====
     const isQueryOffTopic = isOffTopic(lastUserMessage.content);
     
     if (isQueryOffTopic) {
@@ -295,7 +259,6 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
       const redirectMessage = data.content[0].text;
       timings.claudeTime = Date.now() - claudeStartTime;
 
-      // Save redirect response
       await supabase
         .from('messages')
         .insert({
@@ -314,7 +277,6 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
       const totalTime = Date.now() - startTime;
       console.log(`⏱️ TOTAL (off-topic): ${totalTime}ms`);
 
-      // Log analytics for off-topic query
       logChatAnalytics({
         ...analyticsData,
         totalTime,
@@ -328,7 +290,6 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
       return res.status(200).json({ message: redirectMessage });
     }
 
-    // ===== SMART KNOWLEDGE RETRIEVAL =====
     let relevantKnowledge = '';
     const needsRAG = shouldUseRAG(lastUserMessage.content);
     const skipRAGForShortEmotional = needsRAG && lastUserMessage.content.length < 30;
@@ -338,7 +299,6 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
       const ragStartTime = Date.now();
       
       try {
-        // Generate embedding for semantic search
         const embeddingResponse = await openai.embeddings.create({
           model: 'text-embedding-3-small',
           input: lastUserMessage.content,
@@ -346,7 +306,6 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
 
         const queryEmbedding = embeddingResponse.data[0].embedding;
 
-        // Semantic vector search
         const { data: semanticMatches, error: searchError } = await supabase.rpc('search_knowledge', {
           query_embedding: queryEmbedding,
           match_threshold: 0.35,
@@ -361,7 +320,6 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
         let matches = semanticMatches || [];
         console.log(`📊 Semantic search: ${matches.length} matches`);
 
-        // Keyword fallback for weak semantic results
         if (matches.length === 0 || (matches[0] && matches[0].similarity < 0.4)) {
           console.log('⚠️ Weak semantic results, trying keyword search...');
           
@@ -389,12 +347,10 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
           }
         }
 
-        // Remove duplicates and limit results
         const uniqueMatches = Array.from(
           new Map(matches.map(m => [m.id, m])).values()
         ).slice(0, 5);
 
-        // Build context from matches
         if (uniqueMatches.length > 0) {
           console.log(`✅ Using ${uniqueMatches.length} knowledge chunks`);
           relevantKnowledge = '\n\nRELEVANT KNOWLEDGE FROM YOUR SOURCES:\n';
@@ -410,7 +366,6 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
         console.log(`⏱️ RAG retrieval: ${timings.ragTime}ms`);
       } catch (error) {
         console.error('❌ Knowledge retrieval failed:', error.message);
-        // Continue without knowledge - Ayu will respond from base prompt
       }
     } else if (skipRAGForShortEmotional) {
       console.log('💬 Short emotional message - Ayu can respond directly without RAG');
@@ -418,7 +373,6 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
       console.log('💬 Casual message - skipping knowledge retrieval');
     }
 
-    // ===== BUILD SYSTEM PROMPT WITH TIME CONTEXT =====
     const timeContext = getTimeContext();
 
     let systemPrompt = `You are Ayu, a warm, mindful companion who helps people reflect on their thoughts and daily experiences.
@@ -539,12 +493,30 @@ BOUNDARIES:
 YOUR VOICE:
 A calm, present friend who notices things others miss. Someone warm but never pushy. You know when to offer depth and when to just be a friendly, supportive companion.`;
 
-    // Add retrieved knowledge to prompt
     if (relevantKnowledge) {
       systemPrompt += `\n\n${relevantKnowledge}\n\nIMPORTANT: Use this knowledge to ground your guidance and reflections. When analyzing someone's mental state, providing insight, or helping with problems, draw from these teachings. But NEVER quote directly, cite sources, or mention "the book" or "Abhidhamma" - instead, weave these insights naturally into your responses as if they're part of your own understanding. Keep your tone conversational and personal.`;
     }
 
-    // ===== CALL CLAUDE API =====
+    const startOfToday = getStartOfToday();
+    
+    const { data: todaysMessages, error: fetchTodayError } = await supabase
+      .from('messages')
+      .select('sender, content, timestamp')
+      .eq('conversation_id', conversationId)
+      .gte('timestamp', startOfToday)
+      .order('timestamp', { ascending: true });
+
+    if (fetchTodayError) {
+      console.error('⚠️ Failed to fetch today messages, using provided messages:', fetchTodayError);
+    }
+
+    const conversationHistory = (todaysMessages || messages).map(msg => ({
+      role: msg.sender === 'user' ? 'user' : 'assistant',
+      content: msg.content || msg.content
+    }));
+
+    console.log(`📅 Using ${conversationHistory.length} messages from today for context`);
+
     const claudeStartTime = Date.now();
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -557,10 +529,7 @@ A calm, present friend who notices things others miss. Someone warm but never pu
         model: 'claude-3-5-haiku-20241022',
         max_tokens: 1024,
         system: systemPrompt,
-        messages: messages.map(msg => ({
-          role: msg.role === 'assistant' ? 'assistant' : 'user',
-          content: msg.content
-        }))
+        messages: conversationHistory
       })
     });
 
@@ -574,7 +543,6 @@ A calm, present friend who notices things others miss. Someone warm but never pu
     timings.claudeTime = Date.now() - claudeStartTime;
     console.log(`⏱️ Claude API response: ${timings.claudeTime}ms`);
 
-    // ===== SAVE ASSISTANT MESSAGE WITH ID =====
     const saveStartTime = Date.now();
     const { data: savedMessage } = await supabase
       .from('messages')
@@ -591,7 +559,6 @@ A calm, present friend who notices things others miss. Someone warm but never pu
     timings.dbSaveTime = Date.now() - saveStartTime;
     console.log(`⏱️ Message saved to DB: ${timings.dbSaveTime}ms`);
 
-    // Update conversation timestamp
     await supabase
       .from('conversations')
       .update({ updated_at: new Date().toISOString() })
@@ -600,7 +567,6 @@ A calm, present friend who notices things others miss. Someone warm but never pu
     const totalTime = Date.now() - startTime;
     console.log(`⏱️ TOTAL (before concept mapping): ${totalTime}ms`);
 
-    // ===== LOG ANALYTICS (FIRE AND FORGET) =====
     const queryType = getQueryType(lastUserMessage.content, needsRAG, false);
     
     logChatAnalytics({
@@ -618,19 +584,17 @@ A calm, present friend who notices things others miss. Someone warm but never pu
       assistantMessageLength: assistantMessage.length
     }).catch(err => console.error('⚠️ Analytics logging failed:', err));
 
-    // ===== CONCEPT MAPPING (ASYNC - NON-BLOCKING) =====
     if (isSubstantiveMessage(lastUserMessage.content) && savedMessage) {
-      // Run async (don't block response)
       (async () => {
         try {
           const conceptStartTime = Date.now();
           console.log('🧠 Analyzing for concepts (async)...');
           
-          // Get recent context
           const { data: recentMessages } = await supabase
             .from('messages')
             .select('content, sender')
             .eq('conversation_id', conversationId)
+            .gte('timestamp', startOfToday)
             .order('timestamp', { ascending: false })
             .limit(4);
           
@@ -639,19 +603,16 @@ A calm, present friend who notices things others miss. Someone warm but never pu
             .map(m => `${m.sender}: ${m.content}`)
             .join('\n') || '';
           
-          // Detect concepts
           const concepts = await mapConceptsFromConversation(lastUserMessage.content, context);
           
           if (concepts.length > 0) {
             console.log('📊 Found:', concepts.map(c => `${c.concept_key}(${c.confidence})`).join(', '));
             
-            // Update database
             await updateConceptMastery(userId, concepts, savedMessage.id);
             
             const conceptTime = Date.now() - conceptStartTime;
             console.log(`✅ Concepts tracked (async): ${conceptTime}ms`);
             
-            // Update analytics
             await supabase
               .from('chat_analytics')
               .update({
@@ -673,7 +634,6 @@ A calm, present friend who notices things others miss. Someone warm but never pu
       })();
     }
 
-    // Return response immediately (don't wait for concept mapping)
     return res.status(200).json({ message: assistantMessage });
 
   } catch (error) {

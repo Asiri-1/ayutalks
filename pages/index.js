@@ -4,7 +4,12 @@ import { useRouter } from 'next/router';
 import { supabase } from '../lib/supabase';
 import VoiceInput, { speakText } from '../components/VoiceInput';
 
-// Function to get time-aware greeting
+function getStartOfToday() {
+  const now = new Date();
+  const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  return startOfDay.toISOString();
+}
+
 function getGreeting() {
   const hour = new Date().getHours();
   
@@ -19,7 +24,6 @@ function getGreeting() {
   }
 }
 
-// Function to get first-time introduction
 function getFirstTimeGreeting() {
   return "Hey, I'm Ayu. I'm here as a friend to talk through your day, your thoughts, or whatever's on your mind. No pressure, no judgment—just a space to reflect. How's it going?";
 }
@@ -92,10 +96,14 @@ export default function Home() {
         conversation = existingConversations[0];
         console.log('Loading existing conversation:', conversation.id);
         
+        // OPTIMIZED: Load only TODAY's messages
+        const startOfToday = getStartOfToday();
+        
         const { data: messageData, error: messagesError } = await supabase
           .from('messages')
           .select('*')
           .eq('conversation_id', conversation.id)
+          .gte('timestamp', startOfToday)
           .order('timestamp', { ascending: true });
 
         if (messagesError) throw messagesError;
@@ -105,7 +113,30 @@ export default function Home() {
           content: msg.content
         }));
 
-        setMessages(loadedMessages);
+        console.log(`📅 Loaded ${loadedMessages.length} messages from today`);
+
+        // If no messages today, start fresh with greeting
+        if (loadedMessages.length === 0) {
+          const initialMessage = {
+            role: 'assistant',
+            content: getGreeting()
+          };
+          
+          setMessages([initialMessage]);
+          
+          await supabase
+            .from('messages')
+            .insert({
+              conversation_id: conversation.id,
+              user_id: user.id,
+              sender: 'assistant',
+              content: initialMessage.content,
+              timestamp: new Date().toISOString()
+            });
+        } else {
+          setMessages(loadedMessages);
+        }
+
         setConversationId(conversation.id);
         setShowChat(true);
       } else {
@@ -186,18 +217,15 @@ export default function Home() {
           console.log('✅ SPEAKING - Pausing microphone');
           setIsAyuSpeaking(true);
           
-          // PAUSE microphone to prevent echo
           if (window.pauseDeepgram) {
             window.pauseDeepgram();
           }
           
           setTimeout(() => {
             speakText(data.message, () => {
-              // CALLBACK when Ayu finishes speaking
               console.log('✅ Finished - Resuming microphone');
               setIsAyuSpeaking(false);
               
-              // RESUME microphone
               if (window.resumeDeepgram) {
                 window.resumeDeepgram();
               }

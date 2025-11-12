@@ -17,7 +17,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const animationFrameRef = useRef(null);
   const shouldContinueRef = useRef(false);
 
-  // Check browser support
   useEffect(() => {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setIsSupported(false);
@@ -25,7 +24,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     }
   }, []);
 
-  // Monitor audio levels
   const monitorAudioLevel = () => {
     if (!analyserRef.current) return;
 
@@ -45,7 +43,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
       setStatus('Connecting...');
       setNeedsRestart(false);
 
-      // Get microphone access
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
@@ -56,7 +53,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
       console.log('✅ Microphone access granted');
 
-      // Setup audio level monitoring
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
       audioContextRef.current = audioContext;
 
@@ -69,7 +65,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
       monitorAudioLevel();
 
-      // Initialize Deepgram
       const apiKey = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY;
       if (!apiKey) {
         throw new Error('Deepgram API key not found');
@@ -88,13 +83,11 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
       deepgramRef.current = connection;
 
-      // Handle connection open
       connection.on(LiveTranscriptionEvents.Open, () => {
         console.log('✅ Deepgram connection opened');
         setStatus('Listening...');
         setIsListening(true);
 
-        // Create MediaRecorder to send audio to Deepgram
         const mediaRecorder = new MediaRecorder(stream, {
           mimeType: 'audio/webm',
         });
@@ -107,11 +100,10 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
           }
         };
 
-        mediaRecorder.start(250); // Send audio every 250ms
+        mediaRecorder.start(250);
         console.log('🎙️ Recording started');
       });
 
-      // Handle transcription results
       connection.on(LiveTranscriptionEvents.Transcript, (data) => {
         const transcript = data.channel?.alternatives[0]?.transcript;
         
@@ -121,20 +113,17 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         }
       });
 
-      // Handle errors
       connection.on(LiveTranscriptionEvents.Error, (error) => {
         console.error('❌ Deepgram error:', error);
         setStatus('Error occurred');
         setNeedsRestart(true);
       });
 
-      // Handle connection close
       connection.on(LiveTranscriptionEvents.Close, () => {
         console.log('🔌 Deepgram connection closed');
         setIsListening(false);
         setStatus('');
         
-        // Auto-restart if still in voice mode
         if (shouldContinueRef.current) {
           console.log('♻️ Auto-restarting...');
           setTimeout(() => {
@@ -153,23 +142,44 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     }
   };
 
+  const pauseDeepgram = () => {
+    console.log('⏸️ Pausing Deepgram (Ayu speaking)');
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.pause();
+    }
+  };
+
+  const resumeDeepgram = () => {
+    console.log('▶️ Resuming Deepgram (Ayu finished)');
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
+      mediaRecorderRef.current.resume();
+    }
+  };
+
+  useEffect(() => {
+    window.pauseDeepgram = pauseDeepgram;
+    window.resumeDeepgram = resumeDeepgram;
+    
+    return () => {
+      delete window.pauseDeepgram;
+      delete window.resumeDeepgram;
+    };
+  }, []);
+
   const stopDeepgram = () => {
     console.log('🛑 Stopping Deepgram...');
     shouldContinueRef.current = false;
     
-    // Stop media recorder
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
       mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
     }
 
-    // Close Deepgram connection
     if (deepgramRef.current) {
       deepgramRef.current.finish();
       deepgramRef.current = null;
     }
 
-    // Stop audio monitoring
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
     }
@@ -200,7 +210,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     }
   };
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       stopDeepgram();
@@ -229,7 +238,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
   return (
     <div className="flex flex-col items-center gap-2 w-full">
-      {/* Voice Mode Toggle Button */}
       <button
         onClick={toggleVoiceMode}
         disabled={disabled}
@@ -257,10 +265,8 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         </div>
       </button>
 
-      {/* Audio Level Indicator */}
       {voiceMode && isListening && (
         <div className="w-full max-w-xs">
-          {/* Volume Bars */}
           <div className="flex gap-1 h-8 items-end justify-center mb-2">
             {[...Array(10)].map((_, i) => {
               const barThreshold = (i + 1) * 10;
@@ -282,7 +288,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
             })}
           </div>
 
-          {/* Status Message */}
           <div className={`
             flex items-center justify-center gap-2 px-3 py-2 rounded-lg
             ${audioLevel < 20 ? 'bg-red-50 text-red-500' : 
@@ -296,7 +301,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         </div>
       )}
 
-      {/* Restart Button */}
       {voiceMode && needsRestart && (
         <button
           onClick={startDeepgram}
@@ -307,7 +311,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         </button>
       )}
 
-      {/* Status Text */}
       {status && (
         <span className="text-xs text-white font-medium">
           {status}
@@ -329,57 +332,75 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   );
 }
 
-// Text-to-Speech function
-export function speakText(text) {
+// Text-to-Speech with MALE voice
+export function speakText(text, onComplete) {
   console.log('🔊 speakText called:', text.substring(0, 50));
   
   if (typeof window === 'undefined' || !window.speechSynthesis) {
     console.warn('❌ Speech synthesis not supported');
+    if (onComplete) onComplete();
     return;
   }
 
-  // Cancel any ongoing speech
   window.speechSynthesis.cancel();
 
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 0.9;
-  utterance.pitch = 1.0;
+  utterance.rate = 0.95;
+  utterance.pitch = 0.9; // Lower pitch for male voice
   utterance.volume = 1.0;
 
-  // Wait for voices to load
   const speak = () => {
     const voices = window.speechSynthesis.getVoices();
     console.log('🎙️ Available voices:', voices.length);
     
+    // PREFER MALE VOICES
     const preferredVoice = voices.find(voice => 
-      voice.name.includes('Female') || 
-      voice.name.includes('Samantha') ||
-      voice.name.includes('Karen') ||
-      voice.name.includes('Google') ||
-      voice.lang.includes('en-US') ||
-      voice.lang.includes('en-GB')
+      voice.name.includes('Male') ||
+      voice.name.includes('male') ||
+      voice.name.includes('David') ||
+      voice.name.includes('Daniel') ||
+      voice.name.includes('Alex') ||
+      voice.name.includes('James') ||
+      voice.name.includes('Thomas') ||
+      voice.name.includes('Google UK English Male') ||
+      voice.name.includes('Google US English Male') ||
+      (voice.lang.includes('en') && voice.name.toLowerCase().includes('male'))
+    );
+    
+    // Fallback to any English male-sounding voice
+    const fallbackVoice = voices.find(voice =>
+      (voice.lang.includes('en-US') || voice.lang.includes('en-GB')) &&
+      !voice.name.includes('Female') &&
+      !voice.name.includes('Samantha') &&
+      !voice.name.includes('Karen') &&
+      !voice.name.includes('Victoria')
     );
     
     if (preferredVoice) {
       utterance.voice = preferredVoice;
-      console.log('✅ Using voice:', preferredVoice.name);
+      console.log('✅ Using MALE voice:', preferredVoice.name);
+    } else if (fallbackVoice) {
+      utterance.voice = fallbackVoice;
+      console.log('✅ Using fallback voice:', fallbackVoice.name);
     } else {
-      console.log('⚠️ Using default voice');
+      console.log('⚠️ Using default voice (no male voice found)');
     }
 
-    utterance.onstart = () => console.log('🔊 Speaking...');
-    utterance.onend = () => console.log('✅ Speaking finished');
-    utterance.onerror = (e) => console.error('❌ Speech error:', e);
+    utterance.onstart = () => console.log('🔊 Ayu speaking (male voice)...');
+    utterance.onend = () => {
+      console.log('✅ Ayu finished speaking');
+      if (onComplete) onComplete();
+    };
+    utterance.onerror = (e) => {
+      console.error('❌ Speech error:', e);
+      if (onComplete) onComplete();
+    };
 
     window.speechSynthesis.speak(utterance);
   };
 
-  // Some browsers need time to load voices
   if (window.speechSynthesis.getVoices().length === 0) {
-    console.log('⏳ Waiting for voices to load...');
-    window.speechSynthesis.onvoiceschanged = () => {
-      speak();
-    };
+    window.speechSynthesis.onvoiceschanged = speak;
   } else {
     speak();
   }
