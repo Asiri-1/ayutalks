@@ -35,6 +35,7 @@ export default function Home() {
   const [isAyuSpeaking, setIsAyuSpeaking] = useState(false);
   const [voiceModeActive, setVoiceModeActive] = useState(false);
   const messagesEndRef = useRef(null);
+  const voiceModeRef = useRef(false); // REF for immediate access
   const router = useRouter();
 
   const scrollToBottom = () => {
@@ -186,22 +187,22 @@ export default function Home() {
       if (data.message) {
         setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
         
-        // Debug logs
-        console.log('🔊 Voice Mode Active:', voiceModeActive);
-        console.log('📝 Ayu\'s message:', data.message.substring(0, 50));
+        // USE REF for immediate, reliable access
+        const shouldSpeak = voiceModeRef.current;
+        console.log('🎤 Voice Mode Status (from ref):', shouldSpeak);
+        console.log('📝 Ayu message:', data.message.substring(0, 50));
         
-        // SPEAK when Voice Mode is ON
-        if (voiceModeActive) {
-          console.log('✅ Making Ayu speak...');
+        if (shouldSpeak) {
+          console.log('✅ SPEAKING NOW');
           setIsAyuSpeaking(true);
           
-          // Small delay to ensure proper sequencing
+          // Small delay for proper sequencing
           setTimeout(() => {
             speakText(data.message);
-          }, 100);
+          }, 200);
           
-          // Reset speaking state after estimated duration
-          const estimatedDuration = data.message.length * 60; // ~60ms per character
+          // Reset speaking state
+          const estimatedDuration = data.message.length * 60;
           setTimeout(() => {
             setIsAyuSpeaking(false);
           }, estimatedDuration);
@@ -347,8 +348,9 @@ export default function Home() {
               }}
               disabled={isLoading || isAyuSpeaking}
               onModeChange={(isActive) => {
-                console.log('🎤 Voice mode changed to:', isActive);
+                console.log('🎤 Voice mode callback received:', isActive);
                 setVoiceModeActive(isActive);
+                voiceModeRef.current = isActive; // Update ref immediately
               }}
             />
             
@@ -381,7 +383,7 @@ export default function Home() {
   );
 }
 
-// Landing Page Styles - Mobile Responsive
+// Landing Page Styles
 const styles = {
   container: {
     minHeight: '100vh',
@@ -442,7 +444,7 @@ const styles = {
   },
 };
 
-// Chat Styles - Mobile Responsive
+// Chat Styles
 const chatStyles = {
   container: {
     minHeight: '100vh',
