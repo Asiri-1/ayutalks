@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Volume2, VolumeX } from 'lucide-react';
+import { Mic, MicOff, Volume2, VolumeX, RefreshCw } from 'lucide-react';
 
 export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
-  const [voiceMode, setVoiceMode] = useState(false); // Voice mode on/off
+  const [voiceMode, setVoiceMode] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSupported, setIsSupported] = useState(true);
   const [audioLevel, setAudioLevel] = useState(0);
   const [volumeStatus, setVolumeStatus] = useState('');
+  const [needsRestart, setNeedsRestart] = useState(false);
   
   const recognitionRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -14,6 +15,8 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const micStreamRef = useRef(null);
   const animationFrameRef = useRef(null);
   const shouldContinueRef = useRef(false);
+  const restartTimeoutRef = useRef(null);
+  const lastRestartRef = useRef(0);
 
   // Monitor audio levels
   const monitorAudioLevel = () => {
@@ -73,6 +76,31 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     setVolumeStatus('');
   };
 
+  const startRecognition = () => {
+    if (!recognitionRef.current || !shouldContinueRef.current) return;
+
+    // Prevent rapid restarts (debounce)
+    const now = Date.now();
+    if (now - lastRestartRef.current < 1000) {
+      console.log('Debouncing restart...');
+      return;
+    }
+    lastRestartRef.current = now;
+
+    try {
+      setNeedsRestart(false);
+      recognitionRef.current.start();
+      console.log('🎤 Recognition started');
+    } catch (error) {
+      if (error.message.includes('already started')) {
+        console.log('Recognition already running');
+      } else {
+        console.error('Error starting recognition:', error);
+        setNeedsRestart(true);
+      }
+    }
+  };
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -84,49 +112,65 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
       }
 
       const recognition = new SpeechRecognition();
-      recognition.continuous = false;
+      
+      // IMPORTANT: Keep continuous true for longer sessions
+      recognition.continuous = true;
       recognition.interimResults = false;
       recognition.lang = 'en-US';
+      recognition.maxAlternatives = 1;
 
       recognition.onstart = () => {
-        console.log('🎤 Listening...');
+        console.log('🎤 Listening started');
         setIsListening(true);
+        setNeedsRestart(false);
         startAudioMonitoring();
       };
 
       recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
+        const transcript = event.results[event.results.length - 1][0].transcript;
         console.log('📝 Transcribed:', transcript);
-        onTranscript(transcript);
+        if (transcript.trim()) {
+          onTranscript(transcript);
+        }
       };
 
       recognition.onerror = (event) => {
         console.error('❌ Speech recognition error:', event.error);
-        setIsListening(false);
-        stopAudioMonitoring();
         
-        // If in voice mode and error, try to restart
-        if (shouldContinueRef.current && voiceMode) {
-          setTimeout(() => {
-            if (shouldContinueRef.current) {
-              recognition.start();
-            }
-          }, 500);
+        // Don't treat 'no-speech' as a fatal error
+        if (event.error === 'no-speech') {
+          console.log('No speech detected, continuing...');
+          return;
+        }
+
+        // For other errors, mark as needing restart
+        if (event.error === 'network' || event.error === 'aborted') {
+          setNeedsRestart(true);
+          setIsListening(false);
+          stopAudioMonitoring();
         }
       };
 
       recognition.onend = () => {
-        console.log('🎤 Stopped listening');
+        console.log('🎤 Recognition ended');
         setIsListening(false);
         stopAudioMonitoring();
         
-        // If in voice mode, automatically restart listening
+        // Auto-restart if still in voice mode
         if (shouldContinueRef.current && voiceMode) {
-          setTimeout(() => {
+          console.log('Auto-restarting recognition...');
+          
+          // Clear any existing restart timeout
+          if (restartTimeoutRef.current) {
+            clearTimeout(restartTimeoutRef.current);
+          }
+          
+          // Restart after a short delay
+          restartTimeoutRef.current = setTimeout(() => {
             if (shouldContinueRef.current) {
-              recognition.start();
+              startRecognition();
             }
-          }, 500);
+          }, 300);
         }
       };
 
@@ -134,8 +178,15 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     }
 
     return () => {
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current);
+      }
       if (recognitionRef.current) {
-        recognitionRef.current.stop();
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          console.log('Recognition already stopped');
+        }
       }
       stopAudioMonitoring();
     };
@@ -153,28 +204,52 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
     if (newMode) {
       // Entering voice mode - start listening
-      if (recognitionRef.current && !isListening) {
-        recognitionRef.current.start();
-      }
+      startRecognition();
     } else {
       // Exiting voice mode - stop listening
+      shouldContinueRef.current = false;
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current);
+      }
       if (recognitionRef.current) {
-        recognitionRef.current.stop();
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          console.log('Recognition already stopped');
+        }
       }
       stopAudioMonitoring();
+      setNeedsRestart(false);
     }
+  };
+
+  // Manual restart function
+  const manualRestart = () => {
+    console.log('Manual restart triggered');
+    shouldContinueRef.current = true;
+    startRecognition();
   };
 
   if (!isSupported) {
     return (
-      <div className="text-xs text-gray-500 italic">
-        Voice not supported in this browser
+      <div className="text-xs text-gray-500 italic p-2 bg-gray-100 rounded">
+        ⚠️ Voice not supported in this browser. Try Chrome on Android.
       </div>
     );
   }
 
   const getStatusDisplay = () => {
-    if (!isListening) return null;
+    if (!isListening && !needsRestart) return null;
+
+    if (needsRestart) {
+      return {
+        color: 'text-yellow-600',
+        bg: 'bg-yellow-50',
+        message: '⚠️ Voice stopped. Tap to restart',
+        icon: <RefreshCw className="w-4 h-4" />,
+        action: true
+      };
+    }
 
     switch (volumeStatus) {
       case 'low':
@@ -270,16 +345,31 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
           {/* Status Message */}
           {statusDisplay && (
-            <div className={`
-              flex items-center justify-center gap-2 px-3 py-2 rounded-lg
-              ${statusDisplay.bg} ${statusDisplay.color}
-              text-xs font-medium
-            `}>
+            <div 
+              className={`
+                flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+                ${statusDisplay.bg} ${statusDisplay.color}
+                text-xs font-medium
+                ${statusDisplay.action ? 'cursor-pointer hover:opacity-80' : ''}
+              `}
+              onClick={statusDisplay.action ? manualRestart : undefined}
+            >
               {statusDisplay.icon}
               <span>{statusDisplay.message}</span>
             </div>
           )}
         </div>
+      )}
+
+      {/* Manual Restart Button - Show if needs restart */}
+      {voiceMode && needsRestart && (
+        <button
+          onClick={manualRestart}
+          className="px-4 py-2 bg-yellow-500 text-white rounded-lg text-sm font-medium hover:bg-yellow-600 transition-all flex items-center gap-2"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Restart Voice
+        </button>
       )}
 
       {/* Status Text */}
