@@ -1,0 +1,75 @@
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const { password } = req.body;
+
+  if (password !== 'ayutalks2024') {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: analytics } = await supabase
+      .from('chat_analytics')
+      .select('*')
+      .gte('created_at', thirtyDaysAgo)
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    const totalMessages = analytics?.length || 0;
+    const avgResponseTime = analytics?.reduce((sum, a) => sum + (a.total_response_time || 0), 0) / totalMessages || 0;
+    const ragUsed = analytics?.filter(a => a.used_rag).length || 0;
+    
+    const messageTypes = {
+      casual: analytics?.filter(a => a.query_type === 'casual').length || 0,
+      emotional: analytics?.filter(a => a.query_type === 'emotional').length || 0,
+      substantive: analytics?.filter(a => a.query_type === 'substantive').length || 0,
+    };
+
+    // Map database fields to frontend expected fields
+    const mappedMessages = analytics?.map(msg => ({
+      // Map created_at → timestamp
+      timestamp: msg.created_at,
+      
+      // Map query_type → message_type
+      message_type: msg.query_type || 'unknown',
+      
+      // Generate query_preview from concepts if available
+      query_preview: msg.concept_keys?.length > 0 
+        ? `Discussed: ${msg.concept_keys.slice(0, 2).join(', ')}`
+        : 'N/A',
+      
+      // Keep all other fields
+      total_time: msg.total_response_time,
+      rag_time: msg.rag_retrieval_time,
+      llm_time: msg.claude_api_time,
+      used_rag: msg.used_rag,
+      concepts_tracked: msg.concepts_mapped || 0,
+      conversation_id: msg.conversation_id,
+      user_id: msg.user_id
+    })) || [];
+
+    return res.status(200).json({
+      summary: {
+        totalMessages,
+        avgResponseTime: avgResponseTime / 1000, // Convert to seconds
+        ragUsageRate: (ragUsed / totalMessages) * 100,
+        messageTypes
+      },
+      recentMessages: mappedMessages.slice(0, 20)
+    });
+  } catch (error) {
+    console.error('Analytics error:', error);
+    return res.status(500).json({ error: 'Failed to fetch analytics' });
+  }
+}
