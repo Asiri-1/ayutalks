@@ -367,10 +367,25 @@ export default function Home() {
                 sendMessage(transcript);
               }}
               disabled={isLoading || isAyuSpeaking}
-              onModeChange={(isActive) => {
+                           onModeChange={(isActive) => {
                 console.log('🎤 Voice mode callback:', isActive);
                 setVoiceModeActive(isActive);
                 voiceModeRef.current = isActive;
+                
+                // iOS FIX: Pre-warm speech synthesis on user interaction
+                if (isActive && typeof window !== 'undefined') {
+                  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+                  if (isIOS) {
+                    console.log('📱 iOS detected - pre-warming speech synthesis');
+                    // Create silent utterance to initialize speech
+                    const warmup = new SpeechSynthesisUtterance('');
+                    warmup.volume = 0;
+                    warmup.rate = 1;
+                    warmup.pitch = 1;
+                    window.speechSynthesis.speak(warmup);
+                    console.log('✅ Speech synthesis pre-warmed for iOS');
+                  }
+                }
               }}
             />
             
