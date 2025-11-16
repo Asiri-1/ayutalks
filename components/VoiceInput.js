@@ -184,21 +184,47 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     shouldContinueRef.current = false;
     isAyuSpeakingRef.current = false;
     
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+    // FIX: Better cleanup with error handling
+    try {
+      if (mediaRecorderRef.current) {
+        if (mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+        // Stop all tracks
+        if (mediaRecorderRef.current.stream) {
+          mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+        }
+        mediaRecorderRef.current = null;
+      }
+    } catch (e) {
+      console.warn('⚠️ Error stopping media recorder:', e);
     }
 
-    if (deepgramRef.current) {
-      deepgramRef.current.finish();
-      deepgramRef.current = null;
+    try {
+      if (deepgramRef.current) {
+        deepgramRef.current.finish();
+        deepgramRef.current = null;
+      }
+    } catch (e) {
+      console.warn('⚠️ Error closing Deepgram:', e);
     }
 
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current);
+    try {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+    } catch (e) {
+      console.warn('⚠️ Error canceling animation:', e);
     }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
+
+    try {
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+    } catch (e) {
+      console.warn('⚠️ Error closing audio context:', e);
     }
 
     setIsListening(false);
@@ -209,7 +235,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
   const toggleVoiceMode = async () => {
     const newMode = !voiceMode;
-    console.log('🎤 Toggle voice mode:', newMode);
+    console.log('🎤 Toggle voice mode:', voiceMode, '→', newMode);
     setVoiceMode(newMode);
     shouldContinueRef.current = newMode;
     
@@ -224,11 +250,22 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     }
   };
 
+  // FIX: Cleanup on unmount
   useEffect(() => {
     return () => {
+      console.log('🧹 Component unmounting - cleanup');
       stopDeepgram();
     };
   }, []);
+
+  // FIX: Stop when disabled prop changes
+  useEffect(() => {
+    if (disabled && voiceMode) {
+      console.log('⏹️ Disabled prop changed - stopping voice mode');
+      setVoiceMode(false);
+      stopDeepgram();
+    }
+  }, [disabled]);
 
   if (!isSupported) {
     return (
@@ -346,7 +383,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   );
 }
 
-// Text-to-Speech with MALE voice - ENHANCED for deeper masculine sound
+// Text-to-Speech with MALE voice - ENHANCED for deeper masculine sound + iOS FIX
 export function speakText(text, onComplete) {
   console.log('🔊 speakText called:', text.substring(0, 50));
   
@@ -356,12 +393,36 @@ export function speakText(text, onComplete) {
     return;
   }
 
+  // Pause microphone while speaking
+  if (window.pauseDeepgram) {
+    window.pauseDeepgram();
+  }
+
   window.speechSynthesis.cancel();
 
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 0.95;
-  utterance.pitch = 0.75;  // LOWER PITCH for male voice (was 0.9)
-  utterance.volume = 1.0;
+  
+  // iOS DETECTION
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  const isAndroid = /Android/.test(navigator.userAgent);
+  
+  // Platform-specific settings
+  if (isIOS) {
+    utterance.rate = 0.9;   // Slightly slower on iOS
+    utterance.pitch = 0.75; // Lower pitch for male voice
+    utterance.volume = 1.0;
+    console.log('📱 iOS detected - adjusted settings');
+  } else if (isAndroid) {
+    utterance.rate = 0.95;
+    utterance.pitch = 0.75;
+    utterance.volume = 1.0;
+    console.log('🤖 Android detected - adjusted settings');
+  } else {
+    utterance.rate = 0.95;
+    utterance.pitch = 0.75;
+    utterance.volume = 1.0;
+    console.log('💻 Desktop detected - adjusted settings');
+  }
 
   const speak = () => {
     const voices = window.speechSynthesis.getVoices();
@@ -407,20 +468,54 @@ export function speakText(text, onComplete) {
       console.log('⚠️ Using default voice with low pitch (no male voice found)');
     }
 
-    utterance.onstart = () => console.log('🔊 Ayu speaking (male voice)...');
+    utterance.onstart = () => {
+      console.log('🔊 Ayu speaking (male voice)...');
+    };
+    
     utterance.onend = () => {
       console.log('✅ Ayu finished speaking');
+      
+      // Resume microphone after speaking
+      if (window.resumeDeepgram) {
+        setTimeout(() => {
+          window.resumeDeepgram();
+        }, 500); // Small delay before resuming
+      }
+      
       if (onComplete) onComplete();
     };
+    
     utterance.onerror = (e) => {
       console.error('❌ Speech error:', e);
+      
+      // Resume microphone even on error
+      if (window.resumeDeepgram) {
+        window.resumeDeepgram();
+      }
+      
       if (onComplete) onComplete();
     };
 
-    window.speechSynthesis.speak(utterance);
+    // iOS FIX: Add delay before speaking
+    const speakDelay = isIOS ? 200 : (isAndroid ? 150 : 100);
+    
+    setTimeout(() => {
+      try {
+        window.speechSynthesis.speak(utterance);
+        console.log('🗣️ Speech started (after', speakDelay, 'ms delay)');
+      } catch (error) {
+        console.error('❌ Failed to speak:', error);
+        if (window.resumeDeepgram) {
+          window.resumeDeepgram();
+        }
+        if (onComplete) onComplete();
+      }
+    }, speakDelay);
   };
 
+  // Handle voices loading
   if (window.speechSynthesis.getVoices().length === 0) {
+    console.log('⏳ Waiting for voices to load...');
     window.speechSynthesis.onvoiceschanged = speak;
   } else {
     speak();
