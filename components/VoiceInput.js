@@ -16,6 +16,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const analyserRef = useRef(null);
   const animationFrameRef = useRef(null);
   const shouldContinueRef = useRef(false);
+  const isAyuSpeakingRef = useRef(false);
 
   useEffect(() => {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -108,6 +109,12 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         const transcript = data.channel?.alternatives[0]?.transcript;
         
         if (transcript && transcript.trim()) {
+          // DOUBLE PROTECTION: Check both disabled prop AND speaking ref
+          if (disabled || isAyuSpeakingRef.current) {
+            console.log('⏸️ BLOCKED transcript (Ayu speaking):', transcript);
+            return;
+          }
+          
           console.log('📝 Transcript:', transcript);
           onTranscript(transcript);
         }
@@ -143,16 +150,22 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   };
 
   const pauseDeepgram = () => {
-    console.log('⏸️ Pausing Deepgram (Ayu speaking)');
+    console.log('⏸️ PAUSING Deepgram (Ayu speaking)');
+    isAyuSpeakingRef.current = true;
+    
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.pause();
+      console.log('✅ MediaRecorder paused');
     }
   };
 
   const resumeDeepgram = () => {
-    console.log('▶️ Resuming Deepgram (Ayu finished)');
+    console.log('▶️ RESUMING Deepgram (Ayu finished)');
+    isAyuSpeakingRef.current = false;
+    
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
       mediaRecorderRef.current.resume();
+      console.log('✅ MediaRecorder resumed');
     }
   };
 
@@ -169,6 +182,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const stopDeepgram = () => {
     console.log('🛑 Stopping Deepgram...');
     shouldContinueRef.current = false;
+    isAyuSpeakingRef.current = false;
     
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
@@ -332,7 +346,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   );
 }
 
-// Text-to-Speech with MALE voice
+// Text-to-Speech with MALE voice - ENHANCED for deeper masculine sound
 export function speakText(text, onComplete) {
   console.log('🔊 speakText called:', text.substring(0, 50));
   
@@ -346,14 +360,14 @@ export function speakText(text, onComplete) {
 
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.rate = 0.95;
-  utterance.pitch = 0.9; // Lower pitch for male voice
+  utterance.pitch = 0.75;  // LOWER PITCH for male voice (was 0.9)
   utterance.volume = 1.0;
 
   const speak = () => {
     const voices = window.speechSynthesis.getVoices();
     console.log('🎙️ Available voices:', voices.length);
     
-    // PREFER MALE VOICES
+    // AGGRESSIVE MALE VOICE SEARCH - checks 15+ patterns
     const preferredVoice = voices.find(voice => 
       voice.name.includes('Male') ||
       voice.name.includes('male') ||
@@ -362,15 +376,20 @@ export function speakText(text, onComplete) {
       voice.name.includes('Alex') ||
       voice.name.includes('James') ||
       voice.name.includes('Thomas') ||
+      voice.name.includes('Oliver') ||
       voice.name.includes('Google UK English Male') ||
       voice.name.includes('Google US English Male') ||
+      // Android male voices
+      (voice.name.includes('en-us-x-') && voice.name.includes('male')) ||
+      (voice.name.includes('en-gb-x-') && voice.name.includes('male')) ||
       (voice.lang.includes('en') && voice.name.toLowerCase().includes('male'))
     );
     
-    // Fallback to any English male-sounding voice
+    // Fallback: English voice that's NOT explicitly female
     const fallbackVoice = voices.find(voice =>
       (voice.lang.includes('en-US') || voice.lang.includes('en-GB')) &&
       !voice.name.includes('Female') &&
+      !voice.name.includes('female') &&
       !voice.name.includes('Samantha') &&
       !voice.name.includes('Karen') &&
       !voice.name.includes('Victoria')
@@ -381,9 +400,11 @@ export function speakText(text, onComplete) {
       console.log('✅ Using MALE voice:', preferredVoice.name);
     } else if (fallbackVoice) {
       utterance.voice = fallbackVoice;
-      console.log('✅ Using fallback voice:', fallbackVoice.name);
+      utterance.pitch = 0.7;  // Even lower pitch for fallback
+      console.log('✅ Using fallback voice with low pitch:', fallbackVoice.name);
     } else {
-      console.log('⚠️ Using default voice (no male voice found)');
+      utterance.pitch = 0.7;  // Very low pitch for default
+      console.log('⚠️ Using default voice with low pitch (no male voice found)');
     }
 
     utterance.onstart = () => console.log('🔊 Ayu speaking (male voice)...');
