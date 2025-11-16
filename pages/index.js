@@ -214,23 +214,24 @@ export default function Home() {
         console.log('🎤 Voice Mode Status:', shouldSpeak);
         
         if (shouldSpeak) {
-          console.log('✅ SPEAKING - Pausing microphone');
+          console.log('🔊 SPEAKING - Pausing microphone');
           setIsAyuSpeaking(true);
           
+          // Pause microphone to prevent echo
           if (window.pauseDeepgram) {
             window.pauseDeepgram();
           }
           
-          setTimeout(() => {
-            speakText(data.message, () => {
-              console.log('✅ Finished - Resuming microphone');
-              setIsAyuSpeaking(false);
-              
-              if (window.resumeDeepgram) {
-                window.resumeDeepgram();
-              }
-            });
-          }, 200);
+          // CRITICAL FIX: No setTimeout - immediate call keeps user gesture context for mobile
+          speakText(data.message, () => {
+            console.log('✅ Speaking finished - Resuming microphone');
+            setIsAyuSpeaking(false);
+            
+            // Resume microphone after speaking
+            if (window.resumeDeepgram) {
+              window.resumeDeepgram();
+            }
+          });
         } else {
           console.log('🔇 Voice mode OFF - silent');
         }
