@@ -17,6 +17,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const animationFrameRef = useRef(null);
   const shouldContinueRef = useRef(false);
   const isAyuSpeakingRef = useRef(false);
+  const wakeLockRef = useRef(null); // NEW: Screen wake lock
 
   useEffect(() => {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -38,6 +39,36 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     animationFrameRef.current = requestAnimationFrame(monitorAudioLevel);
   };
 
+  // NEW: Screen Wake Lock - keeps screen on during voice mode
+  const requestWakeLock = async () => {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLockRef.current = await navigator.wakeLock.request('screen');
+        console.log('🔒 Screen wake lock activated - screen will stay on');
+        
+        wakeLockRef.current.addEventListener('release', () => {
+          console.log('🔓 Screen wake lock released');
+        });
+      } else {
+        console.log('⚠️ Wake Lock API not supported on this browser');
+      }
+    } catch (err) {
+      console.log('⚠️ Wake lock not available:', err.message);
+    }
+  };
+
+  const releaseWakeLock = async () => {
+    if (wakeLockRef.current) {
+      try {
+        await wakeLockRef.current.release();
+        wakeLockRef.current = null;
+        console.log('✅ Screen wake lock released');
+      } catch (err) {
+        console.error('❌ Error releasing wake lock:', err);
+      }
+    }
+  };
+
   const startDeepgram = async () => {
     try {
       console.log('🎤 Starting Deepgram...');
@@ -53,6 +84,9 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
       });
 
       console.log('✅ Microphone access granted');
+      
+      // NEW: Keep screen awake during voice mode
+      await requestWakeLock();
 
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
       audioContextRef.current = audioContext;
@@ -181,6 +215,10 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
   const stopDeepgram = () => {
     console.log('🛑 Stopping Deepgram...');
+    
+    // NEW: Release screen wake lock
+    releaseWakeLock();
+    
     shouldContinueRef.current = false;
     isAyuSpeakingRef.current = false;
     
@@ -258,14 +296,9 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     };
   }, []);
 
-  // FIX: Stop when disabled prop changes
-  useEffect(() => {
-    if (disabled && voiceMode) {
-      console.log('⏹️ Disabled prop changed - stopping voice mode');
-      setVoiceMode(false);
-      stopDeepgram();
-    }
-  }, [disabled]);
+  // REMOVED: The problematic useEffect that was causing auto-stop
+  // This was stopping voice mode when disabled changed (when Ayu finished speaking)
+  // User should control when voice mode turns off, not automatic
 
   if (!isSupported) {
     return (
