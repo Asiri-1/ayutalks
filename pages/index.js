@@ -40,6 +40,8 @@ export default function Home() {
   const [voiceModeActive, setVoiceModeActive] = useState(false);
   const messagesEndRef = useRef(null);
   const voiceModeRef = useRef(false);
+  const lastMessageRef = useRef({ text: '', timestamp: 0 }); // Prevent duplicate inputs
+  const lastResponseRef = useRef({ text: '', timestamp: 0 }); // Prevent duplicate outputs
   const router = useRouter();
 
   const scrollToBottom = () => {
@@ -189,6 +191,23 @@ export default function Home() {
     const messageText = voiceTranscript || input;
     if (!messageText.trim() || !user || !conversationId) return;
 
+    // PREVENT DUPLICATE INPUT (voice transcripts sending multiple times)
+    const now = Date.now();
+    const isDuplicateInput = 
+      lastMessageRef.current.text === messageText.trim() &&
+      (now - lastMessageRef.current.timestamp) < 2000; // 2 second window
+
+    if (isDuplicateInput) {
+      console.log('🚫 Blocked duplicate input:', messageText.substring(0, 30));
+      return;
+    }
+
+    // Update last message tracker
+    lastMessageRef.current = {
+      text: messageText.trim(),
+      timestamp: now
+    };
+
     const userMessage = { role: 'user', content: messageText };
     setMessages(prev => [...prev, userMessage]);
     setInput('');
@@ -214,24 +233,41 @@ export default function Home() {
         console.log('🎤 Voice Mode Status:', shouldSpeak);
         
         if (shouldSpeak) {
-          console.log('🔊 SPEAKING - Pausing microphone');
-          setIsAyuSpeaking(true);
-          
-          // Pause microphone to prevent echo
-          if (window.pauseDeepgram) {
-            window.pauseDeepgram();
-          }
-          
-          // CRITICAL FIX: No setTimeout - immediate call keeps user gesture context for mobile
-          speakText(data.message, () => {
-            console.log('✅ Speaking finished - Resuming microphone');
-            setIsAyuSpeaking(false);
+          // PREVENT DUPLICATE OUTPUT (Ayu speaking same response multiple times)
+          const now = Date.now();
+          const isDuplicateOutput = 
+            lastResponseRef.current.text === data.message &&
+            (now - lastResponseRef.current.timestamp) < 3000; // 3 second window
+
+          if (isDuplicateOutput) {
+            console.log('🚫 Blocked duplicate voice output');
+            // Don't return here - still need to finish the function
+          } else {
+            // Update last response tracker
+            lastResponseRef.current = {
+              text: data.message,
+              timestamp: now
+            };
+
+            console.log('🔊 SPEAKING - Pausing microphone');
+            setIsAyuSpeaking(true);
             
-            // Resume microphone after speaking
-            if (window.resumeDeepgram) {
-              window.resumeDeepgram();
+            // Pause microphone to prevent echo
+            if (window.pauseDeepgram) {
+              window.pauseDeepgram();
             }
-          });
+            
+            // CRITICAL FIX: No setTimeout - immediate call keeps user gesture context for mobile
+            speakText(data.message, () => {
+              console.log('✅ Speaking finished - Resuming microphone');
+              setIsAyuSpeaking(false);
+              
+              // Resume microphone after speaking
+              if (window.resumeDeepgram) {
+                window.resumeDeepgram();
+              }
+            });
+          }
         } else {
           console.log('🔇 Voice mode OFF - silent');
         }
@@ -367,7 +403,7 @@ export default function Home() {
                 sendMessage(transcript);
               }}
               disabled={isLoading || isAyuSpeaking}
-                           onModeChange={(isActive) => {
+              onModeChange={(isActive) => {
                 console.log('🎤 Voice mode callback:', isActive);
                 setVoiceModeActive(isActive);
                 voiceModeRef.current = isActive;
@@ -449,7 +485,7 @@ const styles = {
     fontSize: 'clamp(0.95rem, 3vw, 1.1rem)',
     lineHeight: '1.6',
     marginBottom: '2rem',
-    opacity: 0.9,
+    opacity: 0.9',
   },
   buttonGroup: {
     display: 'flex',
