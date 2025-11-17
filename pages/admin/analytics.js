@@ -81,10 +81,44 @@ export default function AdminDashboard() {
 
   const copySummaryToClipboard = async () => {
     const summary = `
-AYUTALKS ANALYTICS SUMMARY
+AYUTALKS ENHANCED ANALYTICS SUMMARY
 Date: ${new Date().toLocaleDateString()}
 
-PERFORMANCE (Last 30 Days):
+👥 USER JOURNEY (Last 30 Days):
+- Total Users: ${analytics?.userJourney?.activeUsers?.total || 0}
+- Active Today: ${analytics?.userJourney?.activeUsers?.today || 0}
+- Active This Week: ${analytics?.userJourney?.activeUsers?.week || 0}
+- Active This Month: ${analytics?.userJourney?.activeUsers?.month || 0}
+
+ENGAGEMENT LEVELS:
+- Onboarding (1-5 msgs): ${analytics?.userJourney?.engagementLevels?.onboarding || 0} users
+- Building Rapport (6-20 msgs): ${analytics?.userJourney?.engagementLevels?.building || 0} users
+- Engaged (21-50 msgs): ${analytics?.userJourney?.engagementLevels?.engaged || 0} users
+- Deep Connection (50+ msgs): ${analytics?.userJourney?.engagementLevels?.deep || 0} users
+
+USER LIFECYCLE:
+- New This Week: ${analytics?.userJourney?.lifecycle?.new_week || 0}
+- New This Month: ${analytics?.userJourney?.lifecycle?.new_month || 0}
+- Returning Active: ${analytics?.userJourney?.lifecycle?.returning || 0}
+- At Risk (inactive 7d): ${analytics?.userJourney?.lifecycle?.at_risk || 0}
+
+🧠 CONCEPT MASTERY:
+- Ready for Assessment: ${analytics?.userJourney?.readiness?.readyForAssessment || 0} users (${analytics?.userJourney?.readiness?.readinessRate || 0}%)
+- Avg Mastery Score: ${analytics?.conceptAnalytics?.summary?.avgMasteryAcrossAll || 0}
+
+TOP ENGAGED CONCEPTS:
+${analytics?.conceptAnalytics?.topEngaged?.map((c, i) => 
+  `${i + 1}. ${c.name}: ${c.userCount} users (understanding: ${c.avgMastery}%, encounters: ${c.avgEncounters})`
+).join('\n') || 'N/A'}
+
+🎭 QUALITY SCORE: ${analytics?.quality?.qualityScore || 0}%
+Issues Detected (Last 7 Days):
+- AI Reveals: ${analytics?.quality?.issues?.aiReveals || 0}
+- Numbered Lists in Casual Chat: ${analytics?.quality?.issues?.numberedLists || 0}
+- Religious Terms Leakage: ${analytics?.quality?.issues?.religiousTerms || 0}
+Status: ${analytics?.quality?.status || 'UNKNOWN'}
+
+⚡ PERFORMANCE (Last 30 Days):
 - Total Messages: ${analytics?.summary?.total_messages || 0}
 - Avg Response Time: ${((analytics?.summary?.avg_response_time || 0) / 1000).toFixed(2)}s
 - RAG Usage Rate: ${(((analytics?.summary?.rag_used_count || 0) / (analytics?.summary?.total_messages || 1)) * 100).toFixed(1)}%
@@ -93,6 +127,7 @@ MESSAGE TYPES:
 - Casual: ${analytics?.summary?.casual_messages || 0}
 - Emotional: ${analytics?.summary?.emotional_messages || 0}
 - Substantive: ${analytics?.summary?.substantive_messages || 0}
+- Mind Study Sessions: ${analytics?.summary?.session_messages || 0}
 
 💰 API COSTS:
 - Today: $${(analytics?.costs?.today || 0).toFixed(3)}
@@ -114,16 +149,9 @@ Breakdown:
 🚨 STATUS:
 ${analytics?.summary?.avg_response_time > 7000 ? '🔴 HIGH PRIORITY: Response times too slow' :
   analytics?.errors?.concept_mapping_failures > 3 ? '🔴 HIGH PRIORITY: Concept mapping failing' :
+  analytics?.quality?.issues?.aiReveals > 0 ? '🔴 CRITICAL: Ayu revealed AI nature' :
   analytics?.summary?.rag_used_count / analytics?.summary?.total_messages < 0.15 ? '🟡 MEDIUM: RAG usage low' :
   '🟢 ALL CLEAR: All systems operating normally'}
-
-RECENT MESSAGES:
-${analytics?.recentMessages?.slice(0, 5).map((msg, i) => `
-${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
-   Type: ${msg.message_type || 'unknown'}
-   Query: ${msg.query_preview || 'N/A'}
-   Time: ${((msg.total_time || 0) / 1000).toFixed(2)}s
-`).join('')}
     `.trim();
 
     try {
@@ -199,6 +227,7 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
           </button>
         </div>
 
+        {/* ========== TABS: Analytics + Daily Transcript ========== */}
         <div className="mb-6 flex space-x-4 border-b border-gray-200">
           <button
             onClick={() => setActiveTab('analytics')}
@@ -230,18 +259,29 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center space-x-2"
               >
                 <span>📋</span>
-                <span>{copySuccess ? 'Copied!' : 'Copy Summary for Claude'}</span>
+                <span>{copySuccess ? 'Copied!' : 'Copy Enhanced Summary'}</span>
               </button>
             </div>
 
-            {/* ========== NEW: DAILY ALERTS ========== */}
+            {/* ========== EXISTING: DAILY ALERTS ========== */}
             <div className="bg-gradient-to-r from-yellow-50 to-orange-50 rounded-lg shadow-lg p-6 border-l-4 border-orange-500">
               <h2 className="text-xl font-bold mb-4 flex items-center">
                 <span className="mr-2">🚨</span>
                 Action Required Today
               </h2>
               <div className="space-y-3">
-                {/* High Priority Alerts */}
+                {/* CRITICAL: Quality Issues */}
+                {analytics?.quality?.issues?.aiReveals > 0 && (
+                  <div className="flex items-start space-x-3 bg-red-50 p-3 rounded-lg border border-red-200">
+                    <span className="text-red-600 font-bold">🔴 CRITICAL:</span>
+                    <span className="text-red-800">
+                      Ayu revealed AI nature {analytics.quality.issues.aiReveals} times in past week. 
+                      Review conversations immediately!
+                    </span>
+                  </div>
+                )}
+
+                {/* HIGH: Response Times */}
                 {analytics?.summary?.avg_response_time > 7000 && (
                   <div className="flex items-start space-x-3 bg-red-50 p-3 rounded-lg border border-red-200">
                     <span className="text-red-600 font-bold">🔴 HIGH:</span>
@@ -252,6 +292,7 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
                   </div>
                 )}
                 
+                {/* HIGH: Concept Mapping */}
                 {analytics?.errors?.concept_mapping_failures > 3 && (
                   <div className="flex items-start space-x-3 bg-red-50 p-3 rounded-lg border border-red-200">
                     <span className="text-red-600 font-bold">🔴 HIGH:</span>
@@ -262,7 +303,7 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
                   </div>
                 )}
 
-                {/* Medium Priority Alerts */}
+                {/* MEDIUM: RAG Usage */}
                 {analytics?.summary?.rag_used_count / analytics?.summary?.total_messages < 0.15 && (
                   <div className="flex items-start space-x-3 bg-yellow-50 p-3 rounded-lg border border-yellow-200">
                     <span className="text-yellow-600 font-bold">🟡 MEDIUM:</span>
@@ -273,10 +314,22 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
                   </div>
                 )}
 
+                {/* OPPORTUNITY: Ready Users */}
+                {analytics?.userJourney?.readiness?.readyForAssessment >= 3 && (
+                  <div className="flex items-start space-x-3 bg-green-50 p-3 rounded-lg border border-green-200">
+                    <span className="text-green-600 font-bold">🎯 OPPORTUNITY:</span>
+                    <span className="text-green-800">
+                      {analytics.userJourney.readiness.readyForAssessment} users ready for MindValuation assessment! 
+                      Consider triggering suggestions.
+                    </span>
+                  </div>
+                )}
+
                 {/* All Clear */}
                 {analytics?.summary?.avg_response_time <= 7000 && 
                  (!analytics?.errors?.concept_mapping_failures || analytics.errors.concept_mapping_failures <= 3) && 
-                 analytics?.summary?.rag_used_count / analytics?.summary?.total_messages >= 0.15 && (
+                 analytics?.summary?.rag_used_count / analytics?.summary?.total_messages >= 0.15 &&
+                 (!analytics?.quality?.issues?.aiReveals || analytics.quality.issues.aiReveals === 0) && (
                   <div className="flex items-start space-x-3 bg-green-50 p-3 rounded-lg border border-green-200">
                     <span className="text-green-600 font-bold">🟢 ALL CLEAR:</span>
                     <span className="text-green-800">All systems operating normally</span>
@@ -285,7 +338,178 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
               </div>
             </div>
 
-            {/* ========== NEW: COST TRACKING ========== */}
+            {/* ========== NEW: USER JOURNEY ========== */}
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <h2 className="text-xl font-bold text-gray-800 mb-4">👥 User Journey (Last 30 Days)</h2>
+              
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                <div className="text-center p-4 bg-blue-50 rounded">
+                  <p className="text-3xl font-bold text-blue-600">{analytics?.userJourney?.activeUsers?.today || 0}</p>
+                  <p className="text-sm text-gray-600">Active Today</p>
+                </div>
+                <div className="text-center p-4 bg-blue-50 rounded">
+                  <p className="text-3xl font-bold text-blue-600">{analytics?.userJourney?.activeUsers?.week || 0}</p>
+                  <p className="text-sm text-gray-600">Active This Week</p>
+                </div>
+                <div className="text-center p-4 bg-blue-50 rounded">
+                  <p className="text-3xl font-bold text-blue-600">{analytics?.userJourney?.activeUsers?.month || 0}</p>
+                  <p className="text-sm text-gray-600">Active This Month</p>
+                </div>
+                <div className="text-center p-4 bg-blue-100 rounded">
+                  <p className="text-3xl font-bold text-blue-700">{analytics?.userJourney?.activeUsers?.total || 0}</p>
+                  <p className="text-sm text-gray-600">Total Users</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <h3 className="font-semibold text-gray-700 mb-3">Engagement Levels</h3>
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                      <span className="text-sm">Onboarding (1-5 msgs)</span>
+                      <span className="font-bold text-gray-700">{analytics?.userJourney?.engagementLevels?.onboarding || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-gray-50 rounded">
+                      <span className="text-sm">Building Rapport (6-20)</span>
+                      <span className="font-bold text-gray-700">{analytics?.userJourney?.engagementLevels?.building || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-green-50 rounded">
+                      <span className="text-sm">Engaged (21-50)</span>
+                      <span className="font-bold text-green-700">{analytics?.userJourney?.engagementLevels?.engaged || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-green-100 rounded">
+                      <span className="text-sm">Deep Connection (50+)</span>
+                      <span className="font-bold text-green-800">{analytics?.userJourney?.engagementLevels?.deep || 0}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="font-semibold text-gray-700 mb-3">User Lifecycle</h3>
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center p-2 bg-blue-50 rounded">
+                      <span className="text-sm">New This Week</span>
+                      <span className="font-bold text-blue-700">{analytics?.userJourney?.lifecycle?.new_week || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-blue-50 rounded">
+                      <span className="text-sm">New This Month</span>
+                      <span className="font-bold text-blue-700">{analytics?.userJourney?.lifecycle?.new_month || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-green-50 rounded">
+                      <span className="text-sm">Returning Active</span>
+                      <span className="font-bold text-green-700">{analytics?.userJourney?.lifecycle?.returning || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center p-2 bg-red-50 rounded">
+                      <span className="text-sm">At Risk (7d inactive)</span>
+                      <span className="font-bold text-red-700">{analytics?.userJourney?.lifecycle?.at_risk || 0}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 p-4 bg-gradient-to-r from-purple-50 to-blue-50 rounded">
+                <h3 className="font-semibold text-gray-700 mb-2">🎯 MindValuation Readiness</h3>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-gray-600">Users ready for assessment (3+ concepts at 60%+)</span>
+                  <span className="text-2xl font-bold text-purple-700">
+                    {analytics?.userJourney?.readiness?.readyForAssessment || 0} ({analytics?.userJourney?.readiness?.readinessRate || 0}%)
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* ========== NEW: CONCEPT MASTERY ========== */}
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <h2 className="text-xl font-bold text-gray-800 mb-4">🧠 Concept Mastery Analytics</h2>
+              
+              <div className="grid grid-cols-3 gap-4 mb-6">
+                <div className="text-center p-4 bg-purple-50 rounded">
+                  <p className="text-3xl font-bold text-purple-600">{analytics?.conceptAnalytics?.summary?.totalConcepts || 0}</p>
+                  <p className="text-sm text-gray-600">Total Concepts</p>
+                </div>
+                <div className="text-center p-4 bg-purple-50 rounded">
+                  <p className="text-3xl font-bold text-purple-600">{analytics?.conceptAnalytics?.summary?.conceptsEngaged || 0}</p>
+                  <p className="text-sm text-gray-600">Actively Engaged</p>
+                </div>
+                <div className="text-center p-4 bg-purple-50 rounded">
+                  <p className="text-3xl font-bold text-purple-600">{analytics?.conceptAnalytics?.summary?.avgMasteryAcrossAll || 0}</p>
+                  <p className="text-sm text-gray-600">Avg Mastery</p>
+                </div>
+              </div>
+
+              <h3 className="font-semibold text-gray-700 mb-3">Top Engaged Concepts</h3>
+              <div className="space-y-2">
+                {analytics?.conceptAnalytics?.topEngaged?.map((concept, index) => (
+                  <div key={index} className="p-3 bg-gray-50 rounded hover:bg-gray-100">
+                    <div className="flex justify-between items-center">
+                      <div className="flex-1">
+                        <span className="font-medium text-gray-800">{index + 1}. {concept.name}</span>
+                        <span className="ml-2 text-xs text-gray-500">Difficulty: {concept.difficulty}</span>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm font-semibold text-gray-700">{concept.userCount} users</p>
+                        <p className="text-xs text-gray-600">Understanding: {concept.avgMastery}% | Encounters: {concept.avgEncounters}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ========== NEW: QUALITY MONITORING ========== */}
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <h2 className="text-xl font-bold text-gray-800 mb-4">🎭 Quality Monitoring (Last 7 Days)</h2>
+              
+              <div className="mb-4 p-4 bg-gray-50 rounded">
+                <div className="flex justify-between items-center">
+                  <span className="font-semibold text-gray-700">Overall Quality Score</span>
+                  <span className={`text-3xl font-bold ${
+                    parseFloat(analytics?.quality?.qualityScore || 0) >= 95 ? 'text-green-600' :
+                    parseFloat(analytics?.quality?.qualityScore || 0) >= 85 ? 'text-yellow-600' :
+                    'text-red-600'
+                  }`}>
+                    {analytics?.quality?.qualityScore || 0}%
+                  </span>
+                </div>
+                <p className="text-sm text-gray-600 mt-1">
+                  Reviewed {analytics?.quality?.issues?.totalReviewed || 0} messages
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className={`p-4 rounded ${analytics?.quality?.issues?.aiReveals > 0 ? 'bg-red-50' : 'bg-green-50'}`}>
+                  <p className="text-sm text-gray-600">AI Nature Reveals</p>
+                  <p className={`text-2xl font-bold ${analytics?.quality?.issues?.aiReveals > 0 ? 'text-red-700' : 'text-green-700'}`}>
+                    {analytics?.quality?.issues?.aiReveals || 0}
+                  </p>
+                  {analytics?.quality?.issues?.aiReveals > 0 && (
+                    <p className="text-xs text-red-600 mt-1">❌ CRITICAL: Review immediately</p>
+                  )}
+                </div>
+
+                <div className={`p-4 rounded ${(analytics?.quality?.issues?.numberedLists || 0) > 5 ? 'bg-yellow-50' : 'bg-green-50'}`}>
+                  <p className="text-sm text-gray-600">Numbered Lists in Casual Chat</p>
+                  <p className={`text-2xl font-bold ${(analytics?.quality?.issues?.numberedLists || 0) > 5 ? 'text-yellow-700' : 'text-green-700'}`}>
+                    {analytics?.quality?.issues?.numberedLists || 0}
+                  </p>
+                  {(analytics?.quality?.issues?.numberedLists || 0) > 5 && (
+                    <p className="text-xs text-yellow-600 mt-1">⚠️ Ayu being robotic</p>
+                  )}
+                </div>
+
+                <div className={`p-4 rounded ${analytics?.quality?.issues?.religiousTerms > 0 ? 'bg-yellow-50' : 'bg-green-50'}`}>
+                  <p className="text-sm text-gray-600">Religious Terms Leakage</p>
+                  <p className={`text-2xl font-bold ${analytics?.quality?.issues?.religiousTerms > 0 ? 'text-yellow-700' : 'text-green-700'}`}>
+                    {analytics?.quality?.issues?.religiousTerms || 0}
+                  </p>
+                  {analytics?.quality?.issues?.religiousTerms > 0 && (
+                    <p className="text-xs text-yellow-600 mt-1">⚠️ Frontend should be secular</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* ========== EXISTING: COST TRACKING ========== */}
             <div className="bg-white rounded-lg shadow-lg p-6">
               <h2 className="text-xl font-bold mb-4 flex items-center">
                 <span className="mr-2">💰</span>
@@ -333,13 +557,13 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
               </div>
             </div>
 
-            {/* ========== NEW: ERROR LOG ========== */}
+            {/* ========== EXISTING: ERROR LOG ========== */}
             <div className="bg-white rounded-lg shadow-lg p-6">
               <h2 className="text-xl font-bold mb-4 flex items-center">
                 <span className="mr-2">⚠️</span>
                 Errors & Failures (Last 24 Hours)
               </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className={`p-4 rounded-lg ${
                   (analytics?.errors?.concept_mapping_failures || 0) > 0 ? 'bg-red-50' : 'bg-green-50'
                 }`}>
@@ -381,18 +605,6 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
                   </div>
                 </div>
               </div>
-              {analytics?.errors?.recent_errors && analytics.errors.recent_errors.length > 0 && (
-                <div className="mt-4">
-                  <h3 className="font-semibold mb-2">Recent Error Log:</h3>
-                  <div className="bg-gray-50 p-3 rounded max-h-60 overflow-y-auto font-mono text-xs">
-                    {analytics.errors.recent_errors.map((err, i) => (
-                      <div key={i} className="mb-2 text-red-600">
-                        [{new Date(err.timestamp).toLocaleString()}] {err.error_type}: {err.message}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* ========== EXISTING: PERFORMANCE METRICS ========== */}
@@ -434,6 +646,10 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
                   <span>Substantive:</span>
                   <span className="font-bold">{analytics?.summary?.substantive_messages || 0}</span>
                 </div>
+                <div className="flex justify-between items-center">
+                  <span>Mind Study Sessions:</span>
+                  <span className="font-bold">{analytics?.summary?.session_messages || 0}</span>
+                </div>
               </div>
             </div>
 
@@ -464,6 +680,7 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
                           <span className={`px-2 py-1 text-xs rounded-full ${
                             msg.message_type === 'casual' ? 'bg-blue-100 text-blue-800' :
                             msg.message_type === 'emotional' ? 'bg-purple-100 text-purple-800' :
+                            msg.message_type === 'session' ? 'bg-orange-100 text-orange-800' :
                             'bg-green-100 text-green-800'
                           }`}>
                             {msg.message_type?.toUpperCase()}
@@ -489,6 +706,7 @@ ${i + 1}. [${new Date(msg.timestamp).toLocaleString()}]
             </div>
           </div>
         ) : (
+          /* ========== EXISTING: DAILY TRANSCRIPT TAB ========== */
           <div className="space-y-6">
             <div className="flex justify-between items-center">
               <div>
