@@ -4,6 +4,28 @@ import { mapConceptsFromConversation, isSubstantiveMessage } from '../../lib/con
 import { updateConceptMastery } from '../../lib/concept-tracking'
 import { logChatAnalytics } from '../../lib/analytics'
 
+// ================================================
+// MIND STUDY SESSIONS - New Imports
+// ================================================
+import { 
+  getActiveSession, 
+  updateSessionActivity, 
+  incrementUserResponse,
+  recordInsight,
+  trackSessionConcept
+} from '../../lib/lib-session-manager'
+import { 
+  generateSessionPrompt, 
+  detectInsightInMessage,
+  determineEngagementLevel 
+} from '../../lib/lib-session-prompts'
+import { 
+  buildSessionRAGQuery, 
+  shouldUseRAG as shouldUseSessionRAG,
+  buildRAGContextForSession,
+  extractConceptsFromMessage
+} from '../../lib/lib-session-rag-adapter'
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -163,6 +185,101 @@ const getQueryType = (message, needsRAG, isOffTopicQuery) => {
   return 'casual';
 };
 
+// ================================================
+// HELPER: Get User's Concept Mastery
+// ================================================
+async function getUserConceptMastery(userId) {
+  try {
+    const { data } = await supabase
+      .from('user_concept_mastery')
+      .select('concept_key, mastery_level')
+      .eq('user_id', userId);
+    
+    if (!data) return {};
+    
+    const mastery = {};
+    data.forEach(row => {
+      mastery[row.concept_key] = row.mastery_level;
+    });
+    
+    return mastery;
+  } catch (error) {
+    console.error('Failed to get concept mastery:', error);
+    return {};
+  }
+}
+
+// ================================================
+// HELPER: Get Recent Insights
+// ================================================
+async function getRecentInsights(userId, limit = 3) {
+  try {
+    const { data } = await supabase
+      .from('session_insights')
+      .select('insight_text, insight_type, created_at')
+      .eq('session_id', supabase
+        .from('active_sessions')
+        .select('id')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(5)
+      )
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    
+    return data || [];
+  } catch (error) {
+    console.error('Failed to get recent insights:', error);
+    return [];
+  }
+}
+
+// ================================================
+// HELPER: Get Session Messages
+// ================================================
+async function getSessionMessages(sessionId) {
+  try {
+    const { data } = await supabase
+      .from('messages')
+      .select('content, sender, created_at')
+      .eq('session_id', sessionId)
+      .eq('is_session_message', true)
+      .order('created_at', { ascending: true });
+    
+    return data || [];
+  } catch (error) {
+    console.error('Failed to get session messages:', error);
+    return [];
+  }
+}
+
+// ================================================
+// HELPER: Identify Concepts to Explore
+// ================================================
+function identifyConceptsToExplore(userMastery) {
+  const allConcepts = [
+    'feeling_tone_drives_reaction',
+    'impermanence_constant_change',
+    'present_moment_awareness',
+    'wanting_mechanism',
+    'not_wanting_mechanism',
+    'witnessing_vs_being_caught',
+    'acceptance_vs_resistance',
+    'ego_mechanism',
+    'non_self_anatta',
+    'letting_go_release'
+  ];
+  
+  const unexplored = allConcepts.filter(concept => 
+    !userMastery[concept] || userMastery[concept] < 0.3
+  );
+  
+  return unexplored.slice(0, 3); // Top 3 unexplored
+}
+
+// ================================================
+// MAIN HANDLER
+// ================================================
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -196,8 +313,23 @@ export default async function handler(req, res) {
   };
 
   try {
+    // ================================================
+    // CHECK FOR ACTIVE SESSION
+    // ================================================
+    const activeSession = await getActiveSession(userId);
+    const isSessionMode = activeSession && activeSession.isActive;
+    
+    if (isSessionMode) {
+      console.log('🧘 SESSION MODE ACTIVE:', {
+        sessionId: activeSession.sessionId,
+        phase: activeSession.phase,
+        elapsed: `${Math.floor(activeSession.elapsedSeconds / 60)}m ${activeSession.elapsedSeconds % 60}s`
+      });
+    }
+
     const lastUserMessage = messages[messages.length - 1];
 
+    // Save user message (with session flag if in session)
     let savedUserMessage;
     const { data: userMsgData } = await supabase
       .from('messages')
@@ -206,16 +338,27 @@ export default async function handler(req, res) {
         user_id: userId,
         sender: 'user',
         content: lastUserMessage.content,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        // NEW: Session tracking
+        session_id: isSessionMode ? activeSession.sessionId : null,
+        is_session_message: isSessionMode,
+        session_phase: isSessionMode ? activeSession.phase : null
       })
       .select()
       .single();
     
     savedUserMessage = userMsgData;
-    console.log(`✅ User message saved`);
+    console.log(`✅ User message saved${isSessionMode ? ' (SESSION)' : ''}`);
+
+    // Update session activity if in session mode
+    if (isSessionMode) {
+      await updateSessionActivity(activeSession.sessionId);
+      await incrementUserResponse(activeSession.sessionId);
+    }
 
     const isQueryOffTopic = isOffTopic(lastUserMessage.content);
     
+    // Off-topic handling (unchanged)
     if (isQueryOffTopic) {
       console.log('⚠️ Off-topic query detected - providing gentle redirect');
       
@@ -266,7 +409,10 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
           user_id: userId,
           sender: 'assistant',
           content: redirectMessage,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          session_id: isSessionMode ? activeSession.sessionId : null,
+          is_session_message: isSessionMode,
+          session_phase: isSessionMode ? activeSession.phase : null
         });
 
       await supabase
@@ -290,92 +436,186 @@ NEVER reveal you are an AI. You're simply a friend who has a specific focus.`;
       return res.status(200).json({ message: redirectMessage });
     }
 
+    // ================================================
+    // RAG RETRIEVAL (Conditional based on session mode)
+    // ================================================
     let relevantKnowledge = '';
-    const needsRAG = shouldUseRAG(lastUserMessage.content);
-    const skipRAGForShortEmotional = needsRAG && lastUserMessage.content.length < 30;
+    let needsRAG;
+    let skipRAGForShortEmotional = false;
     
-    if (needsRAG && !skipRAGForShortEmotional) {
-      console.log('🔍 Substantive query detected - retrieving knowledge');
-      const ragStartTime = Date.now();
+    if (isSessionMode) {
+      // SESSION MODE RAG
+      const sessionMessages = await getSessionMessages(activeSession.sessionId);
+      const conceptsToExplore = identifyConceptsToExplore(await getUserConceptMastery(userId));
       
-      try {
-        const embeddingResponse = await openai.embeddings.create({
-          model: 'text-embedding-3-small',
-          input: lastUserMessage.content,
-        });
+      needsRAG = shouldUseSessionRAG(
+        lastUserMessage.content, 
+        activeSession.phase, 
+        sessionMessages.length
+      );
+      
+      if (needsRAG) {
+        console.log('🔍 Session query - retrieving relevant knowledge');
+        const ragStartTime = Date.now();
+        
+        try {
+          // Build session-optimized query
+          const sessionQuery = buildSessionRAGQuery({
+            phase: activeSession.phase,
+            userMessage: lastUserMessage.content,
+            conceptsToExplore: conceptsToExplore,
+            sessionMessages: sessionMessages
+          });
+          
+          const embeddingResponse = await openai.embeddings.create({
+            model: 'text-embedding-3-small',
+            input: sessionQuery.query,
+          });
 
-        const queryEmbedding = embeddingResponse.data[0].embedding;
+          const queryEmbedding = embeddingResponse.data[0].embedding;
 
-        const { data: semanticMatches, error: searchError } = await supabase.rpc('search_knowledge', {
-          query_embedding: queryEmbedding,
-          match_threshold: 0.35,
-          match_count: 5
-        });
+          const { data: semanticMatches, error: searchError } = await supabase.rpc('search_knowledge', {
+            query_embedding: queryEmbedding,
+            match_threshold: 0.35,
+            match_count: 5
+          });
 
-        if (searchError) {
-          console.error('❌ Semantic search error:', searchError);
-          throw searchError;
+          if (searchError) {
+            console.error('❌ Semantic search error:', searchError);
+            throw searchError;
+          }
+
+          let matches = semanticMatches || [];
+          console.log(`📊 Session semantic search: ${matches.length} matches`);
+
+          const uniqueMatches = Array.from(
+            new Map(matches.map(m => [m.id, m])).values()
+          ).slice(0, 5);
+
+          if (uniqueMatches.length > 0) {
+            relevantKnowledge = buildRAGContextForSession(uniqueMatches, 2000);
+            timings.ragChunksFound = uniqueMatches.length;
+          }
+          
+          timings.ragTime = Date.now() - ragStartTime;
+          console.log(`⏱️ Session RAG: ${timings.ragTime}ms`);
+        } catch (error) {
+          console.error('❌ Session knowledge retrieval failed:', error.message);
         }
+      }
+    } else {
+      // REGULAR CHAT RAG (existing logic)
+      needsRAG = shouldUseRAG(lastUserMessage.content);
+      skipRAGForShortEmotional = needsRAG && lastUserMessage.content.length < 30;
+      
+      if (needsRAG && !skipRAGForShortEmotional) {
+        console.log('🔍 Substantive query detected - retrieving knowledge');
+        const ragStartTime = Date.now();
+        
+        try {
+          const embeddingResponse = await openai.embeddings.create({
+            model: 'text-embedding-3-small',
+            input: lastUserMessage.content,
+          });
 
-        let matches = semanticMatches || [];
-        console.log(`📊 Semantic search: ${matches.length} matches`);
+          const queryEmbedding = embeddingResponse.data[0].embedding;
 
-        if (matches.length === 0 || (matches[0] && matches[0].similarity < 0.4)) {
-          console.log('⚠️ Weak semantic results, trying keyword search...');
-          
-          const keywords = lastUserMessage.content
-            .toLowerCase()
-            .replace(/[?!.,]/g, '')
-            .split(' ')
-            .filter(word => word.length > 3)
-            .slice(0, 3);
-          
-          if (keywords.length > 0) {
-            console.log(`🔑 Keyword search for: ${keywords.join(', ')}`);
+          const { data: semanticMatches, error: searchError } = await supabase.rpc('search_knowledge', {
+            query_embedding: queryEmbedding,
+            match_threshold: 0.35,
+            match_count: 5
+          });
+
+          if (searchError) {
+            console.error('❌ Semantic search error:', searchError);
+            throw searchError;
+          }
+
+          let matches = semanticMatches || [];
+          console.log(`📊 Semantic search: ${matches.length} matches`);
+
+          if (matches.length === 0 || (matches[0] && matches[0].similarity < 0.4)) {
+            console.log('⚠️ Weak semantic results, trying keyword search...');
             
-            const searchPattern = keywords.map(k => `content.ilike.%${k}%`).join(',');
-            const { data: keywordMatches } = await supabase
-              .from('knowledge_base')
-              .select('*')
-              .or(searchPattern)
-              .limit(5);
+            const keywords = lastUserMessage.content
+              .toLowerCase()
+              .replace(/[?!.,]/g, '')
+              .split(' ')
+              .filter(word => word.length > 3)
+              .slice(0, 3);
             
-            if (keywordMatches && keywordMatches.length > 0) {
-              console.log(`✅ Keyword search: ${keywordMatches.length} matches`);
-              matches = [...matches, ...keywordMatches];
+            if (keywords.length > 0) {
+              console.log(`🔑 Keyword search for: ${keywords.join(', ')}`);
+              
+              const searchPattern = keywords.map(k => `content.ilike.%${k}%`).join(',');
+              const { data: keywordMatches } = await supabase
+                .from('knowledge_base')
+                .select('*')
+                .or(searchPattern)
+                .limit(5);
+              
+              if (keywordMatches && keywordMatches.length > 0) {
+                console.log(`✅ Keyword search: ${keywordMatches.length} matches`);
+                matches = [...matches, ...keywordMatches];
+              }
             }
           }
-        }
 
-        const uniqueMatches = Array.from(
-          new Map(matches.map(m => [m.id, m])).values()
-        ).slice(0, 5);
+          const uniqueMatches = Array.from(
+            new Map(matches.map(m => [m.id, m])).values()
+          ).slice(0, 5);
 
-        if (uniqueMatches.length > 0) {
-          console.log(`✅ Using ${uniqueMatches.length} knowledge chunks`);
-          relevantKnowledge = '\n\nRELEVANT KNOWLEDGE FROM YOUR SOURCES:\n';
-          uniqueMatches.forEach((match) => {
-            relevantKnowledge += `[Source: ${match.source}]\n${match.content}\n\n`;
-          });
-          timings.ragChunksFound = uniqueMatches.length;
-        } else {
-          console.log('⚠️ No relevant knowledge found');
+          if (uniqueMatches.length > 0) {
+            console.log(`✅ Using ${uniqueMatches.length} knowledge chunks`);
+            relevantKnowledge = '\n\nRELEVANT KNOWLEDGE FROM YOUR SOURCES:\n';
+            uniqueMatches.forEach((match) => {
+              relevantKnowledge += `[Source: ${match.source}]\n${match.content}\n\n`;
+            });
+            timings.ragChunksFound = uniqueMatches.length;
+          } else {
+            console.log('⚠️ No relevant knowledge found');
+          }
+          
+          timings.ragTime = Date.now() - ragStartTime;
+          console.log(`⏱️ RAG retrieval: ${timings.ragTime}ms`);
+        } catch (error) {
+          console.error('❌ Knowledge retrieval failed:', error.message);
         }
-        
-        timings.ragTime = Date.now() - ragStartTime;
-        console.log(`⏱️ RAG retrieval: ${timings.ragTime}ms`);
-      } catch (error) {
-        console.error('❌ Knowledge retrieval failed:', error.message);
+      } else if (skipRAGForShortEmotional) {
+        console.log('💬 Short emotional message - Ayu can respond directly without RAG');
+      } else {
+        console.log('💬 Casual message - skipping knowledge retrieval');
       }
-    } else if (skipRAGForShortEmotional) {
-      console.log('💬 Short emotional message - Ayu can respond directly without RAG');
-    } else {
-      console.log('💬 Casual message - skipping knowledge retrieval');
     }
 
+    // ================================================
+    // BUILD SYSTEM PROMPT (Conditional)
+    // ================================================
     const timeContext = getTimeContext();
-
-    let systemPrompt = `You are Ayu, a warm, mindful companion who helps people reflect on their thoughts and daily experiences.
+    let systemPrompt;
+    
+    if (isSessionMode) {
+      // SESSION MODE PROMPT
+      const userMastery = await getUserConceptMastery(userId);
+      const recentInsights = await getRecentInsights(userId, 3);
+      const sessionMessages = await getSessionMessages(activeSession.sessionId);
+      
+      systemPrompt = generateSessionPrompt({
+        phase: activeSession.phase,
+        elapsedSeconds: activeSession.elapsedSeconds,
+        userConceptMastery: userMastery,
+        recentInsights: recentInsights,
+        sessionMessages: sessionMessages
+      });
+      
+      if (relevantKnowledge) {
+        systemPrompt += relevantKnowledge;
+      }
+      
+      console.log(`🧘 Using SESSION prompt (phase: ${activeSession.phase})`);
+    } else {
+      // REGULAR CHAT PROMPT (existing)
+      systemPrompt = `You are Ayu, a warm, mindful companion who helps people reflect on their thoughts and daily experiences.
 
 TIME AWARENESS:
 It's ${timeContext.period} where the user is. ${timeContext.tone}. Let this naturally influence your tone and pacing, but don't explicitly mention the time unless it's relevant to what they're sharing.
@@ -493,10 +733,14 @@ BOUNDARIES:
 YOUR VOICE:
 A calm, present friend who notices things others miss. Someone warm but never pushy. You know when to offer depth and when to just be a friendly, supportive companion.`;
 
-    if (relevantKnowledge) {
-      systemPrompt += `\n\n${relevantKnowledge}\n\nIMPORTANT: Use this knowledge to ground your guidance and reflections. When analyzing someone's mental state, providing insight, or helping with problems, draw from these teachings. But NEVER quote directly, cite sources, or mention "the book" or "Abhidhamma" - instead, weave these insights naturally into your responses as if they're part of your own understanding. Keep your tone conversational and personal.`;
+      if (relevantKnowledge) {
+        systemPrompt += `\n\n${relevantKnowledge}\n\nIMPORTANT: Use this knowledge to ground your guidance and reflections. When analyzing someone's mental state, providing insight, or helping with problems, draw from these teachings. But NEVER quote directly, cite sources, or mention "the book" or "Abhidhamma" - instead, weave these insights naturally into your responses as if they're part of your own understanding. Keep your tone conversational and personal.`;
+      }
     }
 
+    // ================================================
+    // GET CONVERSATION HISTORY
+    // ================================================
     const startOfToday = getStartOfToday();
     
     const { data: todaysMessages, error: fetchTodayError } = await supabase
@@ -517,6 +761,9 @@ A calm, present friend who notices things others miss. Someone warm but never pu
 
     console.log(`📅 Using ${conversationHistory.length} messages from today for context`);
 
+    // ================================================
+    // CALL CLAUDE API
+    // ================================================
     const claudeStartTime = Date.now();
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -543,6 +790,9 @@ A calm, present friend who notices things others miss. Someone warm but never pu
     timings.claudeTime = Date.now() - claudeStartTime;
     console.log(`⏱️ Claude API response: ${timings.claudeTime}ms`);
 
+    // ================================================
+    // SAVE ASSISTANT MESSAGE (with session flags)
+    // ================================================
     const saveStartTime = Date.now();
     const { data: savedMessage } = await supabase
       .from('messages')
@@ -551,7 +801,11 @@ A calm, present friend who notices things others miss. Someone warm but never pu
         user_id: userId,
         sender: 'assistant',
         content: assistantMessage,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        // NEW: Session tracking
+        session_id: isSessionMode ? activeSession.sessionId : null,
+        is_session_message: isSessionMode,
+        session_phase: isSessionMode ? activeSession.phase : null
       })
       .select()
       .single();
@@ -564,11 +818,50 @@ A calm, present friend who notices things others miss. Someone warm but never pu
       .update({ updated_at: new Date().toISOString() })
       .eq('id', conversationId);
 
+    // ================================================
+    // SESSION-SPECIFIC TRACKING
+    // ================================================
+    if (isSessionMode) {
+      // Detect insights
+      const insightDetection = detectInsightInMessage(lastUserMessage.content);
+      if (insightDetection.detected) {
+        console.log('💡 Insight detected:', insightDetection.type);
+        await recordInsight(activeSession.sessionId, {
+          text: lastUserMessage.content,
+          type: insightDetection.type,
+          confidence: insightDetection.confidence,
+          minute: Math.floor(activeSession.elapsedSeconds / 60),
+          triggeredBy: assistantMessage
+        });
+      }
+      
+      // Track concepts from message
+      const conceptsDetected = extractConceptsFromMessage(lastUserMessage.content);
+      if (conceptsDetected.length > 0) {
+        console.log('📊 Session concepts detected:', conceptsDetected.join(', '));
+        
+        for (const concept of conceptsDetected) {
+          const userMastery = await getUserConceptMastery(userId);
+          await trackSessionConcept(activeSession.sessionId, {
+            name: concept,
+            introducedBy: 'user',
+            depth: insightDetection.detected ? 'deeply_explored' : 'mentioned',
+            masteryBefore: userMastery[concept] || 0,
+            masteryAfter: userMastery[concept] || 0,
+            understood: insightDetection.detected
+          });
+        }
+      }
+    }
+
     const totalTime = Date.now() - startTime;
     console.log(`⏱️ TOTAL (before concept mapping): ${totalTime}ms`);
 
-    const queryType = getQueryType(lastUserMessage.content, needsRAG, false);
+    const queryType = isSessionMode ? 'session' : getQueryType(lastUserMessage.content, needsRAG, false);
     
+    // ================================================
+    // ANALYTICS LOGGING
+    // ================================================
     logChatAnalytics({
       ...analyticsData,
       totalTime,
@@ -581,10 +874,15 @@ A calm, present friend who notices things others miss. Someone warm but never pu
       skipRagReason: skipRAGForShortEmotional ? 'short_emotional' : 
                      !needsRAG ? 'casual' : null,
       userMessageLength: lastUserMessage.content.length,
-      assistantMessageLength: assistantMessage.length
+      assistantMessageLength: assistantMessage.length,
+      sessionMode: isSessionMode,
+      sessionId: isSessionMode ? activeSession.sessionId : null
     }).catch(err => console.error('⚠️ Analytics logging failed:', err));
 
-    if (isSubstantiveMessage(lastUserMessage.content) && savedMessage) {
+    // ================================================
+    // CONCEPT MAPPING (Regular chat only, async)
+    // ================================================
+    if (!isSessionMode && isSubstantiveMessage(lastUserMessage.content) && savedMessage) {
       (async () => {
         try {
           const conceptStartTime = Date.now();
@@ -634,7 +932,12 @@ A calm, present friend who notices things others miss. Someone warm but never pu
       })();
     }
 
-    return res.status(200).json({ message: assistantMessage });
+    return res.status(200).json({ 
+      message: assistantMessage,
+      // Optional: inform frontend about session state
+      sessionActive: isSessionMode,
+      sessionPhase: isSessionMode ? activeSession.phase : null
+    });
 
   } catch (error) {
     console.error('❌ API Error:', error);

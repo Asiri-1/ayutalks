@@ -3,6 +3,10 @@ import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { supabase } from '../lib/supabase';
 import VoiceInput, { speakText } from '../components/VoiceInput';
+// ================================================
+// NEW: Import Mind Study Session component
+// ================================================
+import MindStudySession from '../components/MindStudySession';
 
 function getStartOfToday() {
   const now = new Date();
@@ -38,6 +42,13 @@ export default function Home() {
   const [conversationId, setConversationId] = useState(null);
   const [isAyuSpeaking, setIsAyuSpeaking] = useState(false);
   const [voiceModeActive, setVoiceModeActive] = useState(false);
+  
+  // ================================================
+  // NEW: Session state tracking
+  // ================================================
+  const [sessionActive, setSessionActive] = useState(false);
+  const [sessionData, setSessionData] = useState(null);
+  
   const messagesEndRef = useRef(null);
   const voiceModeRef = useRef(false);
   const lastMessageRef = useRef({ text: '', timestamp: 0 }); // Prevent duplicate inputs
@@ -396,6 +407,24 @@ export default function Home() {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* ================================================
+            NEW: Mind Study Session Component
+            ================================================ */}
+        {user && conversationId && (
+          <div style={{ padding: '0 1rem', flexShrink: 0 }}>
+            <MindStudySession
+              userId={user.id}
+              conversationId={conversationId}
+              onSessionStateChange={(active, data) => {
+                setSessionActive(active);
+                setSessionData(data);
+                console.log('🧘 Session state changed:', { active, data });
+              }}
+              isPremium={false} // TODO: Check user's subscription tier
+            />
+          </div>
+        )}
+
         <div style={chatStyles.inputContainer}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', width: '100%', alignItems: 'center' }}>
             <VoiceInput
@@ -485,7 +514,7 @@ const styles = {
     fontSize: 'clamp(0.95rem, 3vw, 1.1rem)',
     lineHeight: '1.6',
     marginBottom: '2rem',
-    opacity: 0.9',
+    opacity: 0.9,
   },
   buttonGroup: {
     display: 'flex',
