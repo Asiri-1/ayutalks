@@ -1,9 +1,9 @@
 // ================================================
-// FIXED: MindStudySession Component (RLS Compatible)
+// MindStudySession - TESTING MODE (No Limits)
 // ================================================
-// This version works with Row Level Security enabled
+// Session limits hidden - unlimited sessions for testing
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 
 export default function MindStudySession({ 
@@ -12,55 +12,36 @@ export default function MindStudySession({
   onSessionStateChange,
   isPremium = false 
 }) {
-  const [eligibilityData, setEligibilityData] = useState(null);
-  const [isEligible, setIsEligible] = useState(false);
-  const [checkingEligibility, setCheckingEligibility] = useState(true);
   const [sessionActive, setSessionActive] = useState(false);
   const [sessionData, setSessionData] = useState(null);
   const [error, setError] = useState(null);
 
-  // Check eligibility on mount
+  // Check for existing session on mount
   useEffect(() => {
-    checkEligibility();
+    checkForActiveSession();
   }, [userId]);
 
-  const checkEligibility = async () => {
+  const checkForActiveSession = async () => {
     try {
-      setCheckingEligibility(true);
-      setError(null);
+      const { data: existingSession, error: checkError } = await supabase
+        .from('active_sessions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('is_active', true)
+        .maybeSingle();
 
-      // Call RPC function to check eligibility
-      const { data, error } = await supabase.rpc('check_session_eligibility', {
-        p_user_id: userId
-      });
-
-      if (error) {
-        console.error('Eligibility check error:', error);
-        throw error;
+      if (checkError && checkError.code !== 'PGRST116') {
+        throw checkError;
       }
 
-      // RPC returns array, get first result
-      const result = Array.isArray(data) ? data[0] : data;
-      
-      console.log('✅ Eligibility:', result);
-
-      setEligibilityData(result);
-      setIsEligible(result?.is_eligible || false);
-
+      if (existingSession) {
+        console.log('✅ Resuming existing session:', existingSession.id);
+        setSessionData(existingSession);
+        setSessionActive(true);
+        onSessionStateChange?.(true, existingSession);
+      }
     } catch (err) {
-      console.error('Failed to check eligibility:', err);
-      setError('Could not check session eligibility');
-      // Default to eligible on error (graceful degradation)
-      setIsEligible(true);
-      setEligibilityData({
-        is_eligible: true,
-        sessions_used: 0,
-        sessions_remaining: 3,
-        is_premium: false,
-        reason: 'error_defaulting_to_eligible'
-      });
-    } finally {
-      setCheckingEligibility(false);
+      console.error('Failed to check for active session:', err);
     }
   };
 
@@ -74,7 +55,7 @@ export default function MindStudySession({
         .select('*')
         .eq('user_id', userId)
         .eq('is_active', true)
-        .maybeSingle(); // Use maybeSingle instead of single to handle no results
+        .maybeSingle();
 
       if (checkError && checkError.code !== 'PGRST116') {
         throw checkError;
@@ -88,7 +69,9 @@ export default function MindStudySession({
         return;
       }
 
-      // Create new session
+      // Create new session (NO LIMIT CHECKING - TESTING MODE)
+      console.log('🧘 Creating new session (TESTING MODE - No limits)');
+      
       const { data: newSession, error: createError } = await supabase
         .from('active_sessions')
         .insert({
@@ -133,7 +116,7 @@ export default function MindStudySession({
           updated_at: new Date().toISOString()
         })
         .eq('id', sessionData.id)
-        .eq('user_id', userId); // RLS check
+        .eq('user_id', userId);
 
       if (updateError) throw updateError;
 
@@ -141,26 +124,12 @@ export default function MindStudySession({
       setSessionData(null);
       setSessionActive(false);
       onSessionStateChange?.(false, null);
-      
-      // Refresh eligibility
-      checkEligibility();
 
     } catch (err) {
       console.error('Failed to end session:', err);
       setError('Could not end session');
     }
   };
-
-  // Show loading state
-  if (checkingEligibility) {
-    return (
-      <div style={styles.container}>
-        <button disabled style={styles.buttonDisabled}>
-          Checking eligibility...
-        </button>
-      </div>
-    );
-  }
 
   // Show error state
   if (error) {
@@ -187,31 +156,13 @@ export default function MindStudySession({
     );
   }
 
-  // Not eligible state
-  if (!isEligible) {
-    return (
-      <div style={styles.container}>
-        <button disabled style={styles.buttonDisabled}>
-          🔒 Session Limit Reached
-        </button>
-        <div style={styles.info}>
-          {isPremium 
-            ? 'Contact support for assistance' 
-            : 'Upgrade to Premium for unlimited sessions'}
-        </div>
-      </div>
-    );
-  }
-
-  // Ready to start state
+  // Ready to start state (NO LIMIT INFO SHOWN)
   return (
     <div style={styles.container}>
       <button onClick={startSession} style={styles.button}>
         🧘 Start Mind Study Session (20 min)
       </button>
-      <div style={styles.info}>
-        {eligibilityData?.sessions_remaining} sessions remaining
-      </div>
+      {/* REMOVED: Session remaining info - testing mode */}
     </div>
   );
 }

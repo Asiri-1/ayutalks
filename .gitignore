@@ -27,3 +27,4 @@ content/
 
 # Testing files
 test-knowledge.js
+.next/

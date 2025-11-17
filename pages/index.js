@@ -3,9 +3,6 @@ import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { supabase } from '../lib/supabase';
 import VoiceInput, { speakText } from '../components/VoiceInput';
-// ================================================
-// NEW: Import Mind Study Session component
-// ================================================
 import MindStudySession from '../components/MindStudySession';
 
 function getStartOfToday() {
@@ -42,17 +39,13 @@ export default function Home() {
   const [conversationId, setConversationId] = useState(null);
   const [isAyuSpeaking, setIsAyuSpeaking] = useState(false);
   const [voiceModeActive, setVoiceModeActive] = useState(false);
-  
-  // ================================================
-  // NEW: Session state tracking
-  // ================================================
   const [sessionActive, setSessionActive] = useState(false);
   const [sessionData, setSessionData] = useState(null);
   
   const messagesEndRef = useRef(null);
   const voiceModeRef = useRef(false);
-  const lastMessageRef = useRef({ text: '', timestamp: 0 }); // Prevent duplicate inputs
-  const lastResponseRef = useRef({ text: '', timestamp: 0 }); // Prevent duplicate outputs
+  const lastMessageRef = useRef({ text: '', timestamp: 0 });
+  const lastResponseRef = useRef({ text: '', timestamp: 0 });
   const router = useRouter();
 
   const scrollToBottom = () => {
@@ -109,7 +102,6 @@ export default function Home() {
         conversation = existingConversations[0];
         console.log('Loading existing conversation:', conversation.id);
         
-        // OPTIMIZED: Load only TODAY's messages
         const startOfToday = getStartOfToday();
         
         const { data: messageData, error: messagesError } = await supabase
@@ -128,7 +120,6 @@ export default function Home() {
 
         console.log(`📅 Loaded ${loadedMessages.length} messages from today`);
 
-        // If no messages today, start fresh with greeting
         if (loadedMessages.length === 0) {
           const initialMessage = {
             role: 'assistant',
@@ -202,18 +193,16 @@ export default function Home() {
     const messageText = voiceTranscript || input;
     if (!messageText.trim() || !user || !conversationId) return;
 
-    // PREVENT DUPLICATE INPUT (voice transcripts sending multiple times)
     const now = Date.now();
     const isDuplicateInput = 
       lastMessageRef.current.text === messageText.trim() &&
-      (now - lastMessageRef.current.timestamp) < 2000; // 2 second window
+      (now - lastMessageRef.current.timestamp) < 2000;
 
     if (isDuplicateInput) {
       console.log('🚫 Blocked duplicate input:', messageText.substring(0, 30));
       return;
     }
 
-    // Update last message tracker
     lastMessageRef.current = {
       text: messageText.trim(),
       timestamp: now
@@ -244,17 +233,14 @@ export default function Home() {
         console.log('🎤 Voice Mode Status:', shouldSpeak);
         
         if (shouldSpeak) {
-          // PREVENT DUPLICATE OUTPUT (Ayu speaking same response multiple times)
           const now = Date.now();
           const isDuplicateOutput = 
             lastResponseRef.current.text === data.message &&
-            (now - lastResponseRef.current.timestamp) < 3000; // 3 second window
+            (now - lastResponseRef.current.timestamp) < 3000;
 
           if (isDuplicateOutput) {
             console.log('🚫 Blocked duplicate voice output');
-            // Don't return here - still need to finish the function
           } else {
-            // Update last response tracker
             lastResponseRef.current = {
               text: data.message,
               timestamp: now
@@ -263,17 +249,14 @@ export default function Home() {
             console.log('🔊 SPEAKING - Pausing microphone');
             setIsAyuSpeaking(true);
             
-            // Pause microphone to prevent echo
             if (window.pauseDeepgram) {
               window.pauseDeepgram();
             }
             
-            // CRITICAL FIX: No setTimeout - immediate call keeps user gesture context for mobile
             speakText(data.message, () => {
               console.log('✅ Speaking finished - Resuming microphone');
               setIsAyuSpeaking(false);
               
-              // Resume microphone after speaking
               if (window.resumeDeepgram) {
                 window.resumeDeepgram();
               }
@@ -374,7 +357,7 @@ export default function Home() {
     <>
       <Head>
         <title>Chat - AyuTalks</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
       </Head>
       <div style={chatStyles.container}>
         <div style={chatStyles.header}>
@@ -407,11 +390,9 @@ export default function Home() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* ================================================
-            NEW: Mind Study Session Component
-            ================================================ */}
+        {/* MOBILE-FIXED: Session button with proper visibility */}
         {user && conversationId && (
-          <div style={{ padding: '0 1rem', flexShrink: 0 }}>
+          <div style={chatStyles.sessionContainer}>
             <MindStudySession
               userId={user.id}
               conversationId={conversationId}
@@ -420,7 +401,7 @@ export default function Home() {
                 setSessionData(data);
                 console.log('🧘 Session state changed:', { active, data });
               }}
-              isPremium={false} // TODO: Check user's subscription tier
+              isPremium={false}
             />
           </div>
         )}
@@ -437,12 +418,10 @@ export default function Home() {
                 setVoiceModeActive(isActive);
                 voiceModeRef.current = isActive;
                 
-                // iOS FIX: Pre-warm speech synthesis on user interaction
                 if (isActive && typeof window !== 'undefined') {
                   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
                   if (isIOS) {
                     console.log('📱 iOS detected - pre-warming speech synthesis');
-                    // Create silent utterance to initialize speech
                     const warmup = new SpeechSynthesisUtterance('');
                     warmup.volume = 0;
                     warmup.rate = 1;
@@ -545,11 +524,12 @@ const styles = {
 const chatStyles = {
   container: {
     minHeight: '100vh',
-    height: '100vh',
-    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    minHeight: '100dvh', // MOBILE FIX: Dynamic viewport height
     display: 'flex',
     flexDirection: 'column',
+    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
     overflow: 'hidden',
+    position: 'relative',
   },
   header: {
     backgroundColor: 'rgba(255,255,255,0.1)',
@@ -559,6 +539,7 @@ const chatStyles = {
     justifyContent: 'space-between',
     backdropFilter: 'blur(10px)',
     flexShrink: 0,
+    zIndex: 10,
   },
   backButton: {
     backgroundColor: 'white',
@@ -589,10 +570,12 @@ const chatStyles = {
     flex: 1,
     padding: '1rem',
     overflowY: 'auto',
+    overflowX: 'hidden',
     display: 'flex',
     flexDirection: 'column',
     gap: '1rem',
     WebkitOverflowScrolling: 'touch',
+    minHeight: 0, // MOBILE FIX: Allow flex to shrink properly
   },
   message: {
     padding: '1rem 1.25rem',
@@ -615,6 +598,14 @@ const chatStyles = {
     alignSelf: 'flex-start',
     borderBottomLeftRadius: '4px',
   },
+  // MOBILE FIX: Dedicated container for session button
+  sessionContainer: {
+    padding: '0.75rem 1rem',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderTop: '1px solid rgba(255,255,255,0.1)',
+    flexShrink: 0,
+    zIndex: 5,
+  },
   inputContainer: {
     padding: '1rem',
     backgroundColor: 'rgba(255,255,255,0.1)',
@@ -624,6 +615,8 @@ const chatStyles = {
     gap: '0.75rem',
     flexShrink: 0,
     alignItems: 'stretch',
+    borderTop: '1px solid rgba(255,255,255,0.1)',
+    zIndex: 10,
   },
   input: {
     flex: 1,

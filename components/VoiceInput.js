@@ -2,6 +2,142 @@ import { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, Volume2, VolumeX, RefreshCw } from 'lucide-react';
 import { createClient, LiveTranscriptionEvents } from '@deepgram/sdk';
 
+// ================================================
+// ENHANCED: Complete Screen Lock Manager (Integrated)
+// ================================================
+class ScreenLockManager {
+  constructor() {
+    this.wakeLock = null;
+    this.audioContext = null;
+    this.silenceNode = null;
+    this.isActive = false;
+    this.visibilityHandler = null;
+  }
+
+  async start() {
+    try {
+      console.log('🔒 Starting screen lock protection...');
+      
+      // 1. Wake Lock API - prevents screen sleep
+      if ('wakeLock' in navigator) {
+        this.wakeLock = await navigator.wakeLock.request('screen');
+        console.log('✅ Wake Lock acquired');
+        
+        this.wakeLock.addEventListener('release', () => {
+          console.log('🔓 Wake Lock released');
+        });
+      }
+
+      // 2. Background Audio Context - keeps audio session alive
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const silenceBuffer = this.audioContext.createBuffer(
+        1,
+        this.audioContext.sampleRate * 0.5,
+        this.audioContext.sampleRate
+      );
+      
+      this.silenceNode = this.audioContext.createBufferSource();
+      this.silenceNode.buffer = silenceBuffer;
+      this.silenceNode.loop = true;
+      this.silenceNode.connect(this.audioContext.destination);
+      this.silenceNode.start();
+      console.log('✅ Background audio started');
+
+      // 3. Media Session API - lock screen controls
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: 'AyuTalks Voice Mode',
+          artist: 'Ayu',
+          artwork: [{ src: '/favicon.ico', sizes: '512x512', type: 'image/png' }]
+        });
+        navigator.mediaSession.playbackState = 'playing';
+        console.log('✅ Media Session configured');
+      }
+
+      // 4. Visibility change handler - re-acquire on unlock
+      this.visibilityHandler = async () => {
+        if (document.visibilityState === 'visible' && !this.wakeLock) {
+          await this.reacquireWakeLock();
+        }
+        if (this.audioContext && this.audioContext.state === 'suspended') {
+          await this.audioContext.resume();
+        }
+      };
+      document.addEventListener('visibilitychange', this.visibilityHandler);
+
+      this.isActive = true;
+      console.log('✅ Screen lock protection ACTIVE');
+      return true;
+    } catch (err) {
+      console.error('❌ Screen lock protection failed:', err);
+      return false;
+    }
+  }
+
+  async reacquireWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        this.wakeLock = await navigator.wakeLock.request('screen');
+        console.log('✅ Wake Lock re-acquired');
+      }
+    } catch (err) {
+      console.error('Failed to re-acquire wake lock:', err);
+    }
+  }
+
+  async stop() {
+    console.log('🛑 Stopping screen lock protection...');
+    
+    // Release wake lock
+    if (this.wakeLock) {
+      try {
+        await this.wakeLock.release();
+        this.wakeLock = null;
+      } catch (err) {
+        console.error('Error releasing wake lock:', err);
+      }
+    }
+
+    // Stop background audio
+    if (this.silenceNode) {
+      try {
+        this.silenceNode.stop();
+        this.silenceNode = null;
+      } catch (err) {
+        console.error('Error stopping silence node:', err);
+      }
+    }
+
+    // Close audio context
+    if (this.audioContext) {
+      try {
+        await this.audioContext.close();
+        this.audioContext = null;
+      } catch (err) {
+        console.error('Error closing audio context:', err);
+      }
+    }
+
+    // Clear media session
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = 'none';
+    }
+
+    // Remove visibility handler
+    if (this.visibilityHandler) {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+
+    this.isActive = false;
+    console.log('✅ Screen lock protection STOPPED');
+  }
+}
+
+// ================================================
+// MAIN COMPONENT: VoiceInput (Enhanced)
+// ================================================
 export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const [voiceMode, setVoiceMode] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -9,6 +145,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const [status, setStatus] = useState('');
   const [audioLevel, setAudioLevel] = useState(0);
   const [needsRestart, setNeedsRestart] = useState(false);
+  const [screenLockActive, setScreenLockActive] = useState(false);
   
   const mediaRecorderRef = useRef(null);
   const deepgramRef = useRef(null);
@@ -17,13 +154,25 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const animationFrameRef = useRef(null);
   const shouldContinueRef = useRef(false);
   const isAyuSpeakingRef = useRef(false);
-  const wakeLockRef = useRef(null); // NEW: Screen wake lock
+  
+  // NEW: Screen lock manager
+  const screenLockManagerRef = useRef(null);
 
   useEffect(() => {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setIsSupported(false);
       console.error('❌ MediaDevices API not supported');
     }
+    
+    // Initialize screen lock manager
+    screenLockManagerRef.current = new ScreenLockManager();
+    
+    return () => {
+      // Cleanup on unmount
+      if (screenLockManagerRef.current?.isActive) {
+        screenLockManagerRef.current.stop();
+      }
+    };
   }, []);
 
   const monitorAudioLevel = () => {
@@ -39,41 +188,19 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     animationFrameRef.current = requestAnimationFrame(monitorAudioLevel);
   };
 
-  // NEW: Screen Wake Lock - keeps screen on during voice mode
-  const requestWakeLock = async () => {
-    try {
-      if ('wakeLock' in navigator) {
-        wakeLockRef.current = await navigator.wakeLock.request('screen');
-        console.log('🔒 Screen wake lock activated - screen will stay on');
-        
-        wakeLockRef.current.addEventListener('release', () => {
-          console.log('🔓 Screen wake lock released');
-        });
-      } else {
-        console.log('⚠️ Wake Lock API not supported on this browser');
-      }
-    } catch (err) {
-      console.log('⚠️ Wake lock not available:', err.message);
-    }
-  };
-
-  const releaseWakeLock = async () => {
-    if (wakeLockRef.current) {
-      try {
-        await wakeLockRef.current.release();
-        wakeLockRef.current = null;
-        console.log('✅ Screen wake lock released');
-      } catch (err) {
-        console.error('❌ Error releasing wake lock:', err);
-      }
-    }
-  };
-
   const startDeepgram = async () => {
     try {
       console.log('🎤 Starting Deepgram...');
       setStatus('Connecting...');
       setNeedsRestart(false);
+
+      // NEW: Start screen lock protection FIRST
+      const lockSuccess = await screenLockManagerRef.current.start();
+      setScreenLockActive(lockSuccess);
+      
+      if (!lockSuccess) {
+        console.warn('⚠️ Screen lock protection unavailable - voice may stop on lock');
+      }
 
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
@@ -84,9 +211,6 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
       });
 
       console.log('✅ Microphone access granted');
-      
-      // NEW: Keep screen awake during voice mode
-      await requestWakeLock();
 
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
       audioContextRef.current = audioContext;
@@ -180,6 +304,12 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
       setStatus('Failed to start');
       setIsListening(false);
       setNeedsRestart(true);
+      
+      // Stop screen lock on error
+      if (screenLockManagerRef.current?.isActive) {
+        await screenLockManagerRef.current.stop();
+        setScreenLockActive(false);
+      }
     }
   };
 
@@ -213,22 +343,24 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     };
   }, []);
 
-  const stopDeepgram = () => {
+  const stopDeepgram = async () => {
     console.log('🛑 Stopping Deepgram...');
     
-    // NEW: Release screen wake lock
-    releaseWakeLock();
+    // NEW: Stop screen lock protection
+    if (screenLockManagerRef.current?.isActive) {
+      await screenLockManagerRef.current.stop();
+      setScreenLockActive(false);
+    }
     
     shouldContinueRef.current = false;
     isAyuSpeakingRef.current = false;
     
-    // FIX: Better cleanup with error handling
+    // Better cleanup with error handling
     try {
       if (mediaRecorderRef.current) {
         if (mediaRecorderRef.current.state !== 'inactive') {
           mediaRecorderRef.current.stop();
         }
-        // Stop all tracks
         if (mediaRecorderRef.current.stream) {
           mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
         }
@@ -284,21 +416,17 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
     if (newMode) {
       await startDeepgram();
     } else {
-      stopDeepgram();
+      await stopDeepgram();
     }
   };
 
-  // FIX: Cleanup on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       console.log('🧹 Component unmounting - cleanup');
       stopDeepgram();
     };
   }, []);
-
-  // REMOVED: The problematic useEffect that was causing auto-stop
-  // This was stopping voice mode when disabled changed (when Ayu finished speaking)
-  // User should control when voice mode turns off, not automatic
 
   if (!isSupported) {
     return (
@@ -339,6 +467,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
             <>
               <Mic className="w-5 h-5" />
               <span>Voice Mode ON</span>
+              {screenLockActive && <span className="text-xs">🔒</span>}
             </>
           ) : (
             <>
@@ -403,7 +532,7 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
       {voiceMode && isListening && (
         <span className="text-xs text-white font-medium animate-pulse">
-          🎤 Listening... Speak naturally
+          🎤 Listening... {screenLockActive && '(Screen lock protected)'}
         </span>
       )}
 
@@ -416,7 +545,9 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   );
 }
 
-// Text-to-Speech with MALE voice - ENHANCED for deeper masculine sound + iOS FIX
+// ================================================
+// TEXT-TO-SPEECH (Unchanged - Your existing code)
+// ================================================
 export function speakText(text, onComplete) {
   console.log('🔊 speakText called:', text.substring(0, 50));
   
@@ -441,8 +572,8 @@ export function speakText(text, onComplete) {
   
   // Platform-specific settings
   if (isIOS) {
-    utterance.rate = 0.9;   // Slightly slower on iOS
-    utterance.pitch = 0.75; // Lower pitch for male voice
+    utterance.rate = 0.9;
+    utterance.pitch = 0.75;
     utterance.volume = 1.0;
     console.log('📱 iOS detected - adjusted settings');
   } else if (isAndroid) {
@@ -461,7 +592,7 @@ export function speakText(text, onComplete) {
     const voices = window.speechSynthesis.getVoices();
     console.log('🎙️ Available voices:', voices.length);
     
-    // AGGRESSIVE MALE VOICE SEARCH - checks 15+ patterns
+    // AGGRESSIVE MALE VOICE SEARCH
     const preferredVoice = voices.find(voice => 
       voice.name.includes('Male') ||
       voice.name.includes('male') ||
@@ -473,13 +604,11 @@ export function speakText(text, onComplete) {
       voice.name.includes('Oliver') ||
       voice.name.includes('Google UK English Male') ||
       voice.name.includes('Google US English Male') ||
-      // Android male voices
       (voice.name.includes('en-us-x-') && voice.name.includes('male')) ||
       (voice.name.includes('en-gb-x-') && voice.name.includes('male')) ||
       (voice.lang.includes('en') && voice.name.toLowerCase().includes('male'))
     );
     
-    // Fallback: English voice that's NOT explicitly female
     const fallbackVoice = voices.find(voice =>
       (voice.lang.includes('en-US') || voice.lang.includes('en-GB')) &&
       !voice.name.includes('Female') &&
@@ -494,11 +623,11 @@ export function speakText(text, onComplete) {
       console.log('✅ Using MALE voice:', preferredVoice.name);
     } else if (fallbackVoice) {
       utterance.voice = fallbackVoice;
-      utterance.pitch = 0.7;  // Even lower pitch for fallback
+      utterance.pitch = 0.7;
       console.log('✅ Using fallback voice with low pitch:', fallbackVoice.name);
     } else {
-      utterance.pitch = 0.7;  // Very low pitch for default
-      console.log('⚠️ Using default voice with low pitch (no male voice found)');
+      utterance.pitch = 0.7;
+      console.log('⚠️ Using default voice with low pitch');
     }
 
     utterance.onstart = () => {
@@ -508,11 +637,10 @@ export function speakText(text, onComplete) {
     utterance.onend = () => {
       console.log('✅ Ayu finished speaking');
       
-      // Resume microphone after speaking
       if (window.resumeDeepgram) {
         setTimeout(() => {
           window.resumeDeepgram();
-        }, 500); // Small delay before resuming
+        }, 500);
       }
       
       if (onComplete) onComplete();
@@ -521,7 +649,6 @@ export function speakText(text, onComplete) {
     utterance.onerror = (e) => {
       console.error('❌ Speech error:', e);
       
-      // Resume microphone even on error
       if (window.resumeDeepgram) {
         window.resumeDeepgram();
       }
@@ -529,7 +656,6 @@ export function speakText(text, onComplete) {
       if (onComplete) onComplete();
     };
 
-    // iOS FIX: Add delay before speaking
     const speakDelay = isIOS ? 200 : (isAndroid ? 150 : 100);
     
     setTimeout(() => {
@@ -546,7 +672,6 @@ export function speakText(text, onComplete) {
     }, speakDelay);
   };
 
-  // Handle voices loading
   if (window.speechSynthesis.getVoices().length === 0) {
     console.log('⏳ Waiting for voices to load...');
     window.speechSynthesis.onvoiceschanged = speak;
