@@ -136,7 +136,62 @@ class ScreenLockManager {
 }
 
 // ================================================
-// MAIN COMPONENT: VoiceInput (Enhanced)
+// NEW: Speech Buffer Manager (Fixes Duplication)
+// ================================================
+class SpeechBufferManager {
+  constructor(onComplete, silenceDelay = 1500) {
+    this.buffer = '';
+    this.timer = null;
+    this.onComplete = onComplete;
+    this.silenceDelay = silenceDelay; // 1.5 seconds of silence = complete thought
+    this.lastTranscriptTime = null;
+  }
+
+  addFragment(transcript) {
+    if (!transcript || !transcript.trim()) return;
+    
+    // Add to buffer with space
+    this.buffer += (this.buffer ? ' ' : '') + transcript.trim();
+    this.lastTranscriptTime = Date.now();
+    
+    console.log('📝 Buffer updated:', this.buffer);
+    
+    // Clear existing timer
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
+    
+    // Set new timer - send after silence
+    this.timer = setTimeout(() => {
+      this.flush();
+    }, this.silenceDelay);
+  }
+
+  flush() {
+    if (this.buffer.trim()) {
+      console.log('✅ Sending complete message:', this.buffer);
+      this.onComplete(this.buffer.trim());
+      this.buffer = '';
+    }
+    this.timer = null;
+  }
+
+  clear() {
+    this.buffer = '';
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+
+  destroy() {
+    this.clear();
+    this.onComplete = null;
+  }
+}
+
+// ================================================
+// MAIN COMPONENT: VoiceInput (Enhanced with Batching)
 // ================================================
 export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const [voiceMode, setVoiceMode] = useState(false);
@@ -155,8 +210,9 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const shouldContinueRef = useRef(false);
   const isAyuSpeakingRef = useRef(false);
   
-  // NEW: Screen lock manager
+  // NEW: Screen lock manager and speech buffer
   const screenLockManagerRef = useRef(null);
+  const speechBufferRef = useRef(null);
 
   useEffect(() => {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -171,6 +227,9 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
       // Cleanup on unmount
       if (screenLockManagerRef.current?.isActive) {
         screenLockManagerRef.current.stop();
+      }
+      if (speechBufferRef.current) {
+        speechBufferRef.current.destroy();
       }
     };
   }, []);
@@ -224,6 +283,17 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
 
       monitorAudioLevel();
 
+      // NEW: Initialize speech buffer manager
+      speechBufferRef.current = new SpeechBufferManager((completeMessage) => {
+        // Only send if NOT disabled and NOT speaking
+        if (!disabled && !isAyuSpeakingRef.current) {
+          console.log('📤 Sending batched message:', completeMessage);
+          onTranscript(completeMessage);
+        } else {
+          console.log('⏸️ BLOCKED batched message (disabled or Ayu speaking)');
+        }
+      }, 1500); // 1.5 second silence threshold
+
       const apiKey = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY;
       if (!apiKey) {
         throw new Error('Deepgram API key not found');
@@ -267,14 +337,12 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         const transcript = data.channel?.alternatives[0]?.transcript;
         
         if (transcript && transcript.trim()) {
-          // DOUBLE PROTECTION: Check both disabled prop AND speaking ref
-          if (disabled || isAyuSpeakingRef.current) {
-            console.log('⏸️ BLOCKED transcript (Ayu speaking):', transcript);
-            return;
-          }
+          console.log('📝 Raw transcript fragment:', transcript);
           
-          console.log('📝 Transcript:', transcript);
-          onTranscript(transcript);
+          // NEW: Add fragment to buffer instead of sending immediately
+          if (speechBufferRef.current) {
+            speechBufferRef.current.addFragment(transcript);
+          }
         }
       });
 
@@ -288,6 +356,11 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
         console.log('🔌 Deepgram connection closed');
         setIsListening(false);
         setStatus('');
+        
+        // Flush any remaining buffer
+        if (speechBufferRef.current) {
+          speechBufferRef.current.flush();
+        }
         
         if (shouldContinueRef.current) {
           console.log('♻️ Auto-restarting...');
@@ -316,6 +389,12 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const pauseDeepgram = () => {
     console.log('⏸️ PAUSING Deepgram (Ayu speaking)');
     isAyuSpeakingRef.current = true;
+    
+    // NEW: Clear buffer when Ayu starts speaking
+    if (speechBufferRef.current) {
+      speechBufferRef.current.clear();
+      console.log('🗑️ Speech buffer cleared');
+    }
     
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.pause();
@@ -346,7 +425,14 @@ export default function VoiceInput({ onTranscript, disabled, onModeChange }) {
   const stopDeepgram = async () => {
     console.log('🛑 Stopping Deepgram...');
     
-    // NEW: Stop screen lock protection
+    // NEW: Flush buffer before stopping
+    if (speechBufferRef.current) {
+      speechBufferRef.current.flush();
+      speechBufferRef.current.destroy();
+      speechBufferRef.current = null;
+    }
+    
+    // Stop screen lock protection
     if (screenLockManagerRef.current?.isActive) {
       await screenLockManagerRef.current.stop();
       setScreenLockActive(false);
