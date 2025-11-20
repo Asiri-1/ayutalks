@@ -41,6 +41,8 @@ export default function Home() {
   const [voiceModeActive, setVoiceModeActive] = useState(false);
   const [sessionActive, setSessionActive] = useState(false);
   const [sessionData, setSessionData] = useState(null);
+  const [autoStartSession, setAutoStartSession] = useState(false);
+  const [sessionModeEnabled, setSessionModeEnabled] = useState(false);
   
   const messagesEndRef = useRef(null);
   const voiceModeRef = useRef(false);
@@ -60,8 +62,13 @@ export default function Home() {
     checkUser();
 
     const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-      setUser(session?.user ?? null);
-      setLoading(false);
+      if (session?.user) {
+        setUser(session.user);
+        autoLoadConversation(session.user);
+      } else {
+        setUser(null);
+        setLoading(false);
+      }
     });
 
     return () => {
@@ -71,8 +78,50 @@ export default function Home() {
 
   const checkUser = async () => {
     const { data: { user } } = await supabase.auth.getUser();
-    setUser(user);
-    setLoading(false);
+    if (user) {
+      setUser(user);
+      await autoLoadConversation(user);
+    } else {
+      setUser(null);
+      setLoading(false);
+    }
+  };
+
+  const autoLoadConversation = async (currentUser) => {
+    if (!currentUser) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      console.log('🔄 Checking for existing conversation...');
+      
+      const { data: existingConversations, error: fetchError } = await supabase
+        .from('conversations')
+        .select('*')
+        .eq('user_id', currentUser.id)
+        .order('updated_at', { ascending: false })
+        .limit(1);
+
+      if (fetchError) {
+        console.error('Error fetching conversations:', fetchError);
+        setLoading(false);
+        return;
+      }
+
+      if (existingConversations && existingConversations.length > 0) {
+        const conversation = existingConversations[0];
+        setConversationId(conversation.id);
+        console.log('✅ Found conversation, showing landing page');
+      }
+      
+      // DON'T auto-load messages or show chat
+      // Just set loading to false - this shows the landing page
+      setLoading(false);
+    } catch (error) {
+      console.error('Error in autoLoadConversation:', error);
+      setLoading(false);
+    }
   };
 
   const handleLogout = async () => {
@@ -80,11 +129,16 @@ export default function Home() {
     setShowChat(false);
     setMessages([]);
     setConversationId(null);
+    setAutoStartSession(false);
+    setSessionModeEnabled(false);
     router.push('/');
   };
 
-  const startConversation = async () => {
+  const startConversation = async (withSession = false) => {
     if (!user) return;
+
+    // Set whether this is a session mode or casual chat mode
+    setSessionModeEnabled(withSession);
 
     try {
       const { data: existingConversations, error: fetchError } = await supabase
@@ -100,7 +154,6 @@ export default function Home() {
 
       if (existingConversations && existingConversations.length > 0) {
         conversation = existingConversations[0];
-        console.log('Loading existing conversation:', conversation.id);
         
         const startOfToday = getStartOfToday();
         
@@ -117,8 +170,6 @@ export default function Home() {
           role: msg.sender === 'user' ? 'user' : 'assistant',
           content: msg.content
         }));
-
-        console.log(`📅 Loaded ${loadedMessages.length} messages from today`);
 
         if (loadedMessages.length === 0) {
           const initialMessage = {
@@ -143,6 +194,10 @@ export default function Home() {
 
         setConversationId(conversation.id);
         setShowChat(true);
+        
+        if (withSession) {
+          setAutoStartSession(true);
+        }
       } else {
         const { data: newConversation, error: createError } = await supabase
           .from('conversations')
@@ -181,6 +236,10 @@ export default function Home() {
 
         if (isFirstTime) {
           localStorage.setItem('ayutalks_visited', 'true');
+        }
+        
+        if (withSession) {
+          setAutoStartSession(true);
         }
       }
     } catch (error) {
@@ -230,7 +289,6 @@ export default function Home() {
         setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
         
         const shouldSpeak = voiceModeRef.current;
-        console.log('🎤 Voice Mode Status:', shouldSpeak);
         
         if (shouldSpeak) {
           const now = Date.now();
@@ -246,7 +304,6 @@ export default function Home() {
               timestamp: now
             };
 
-            console.log('🔊 SPEAKING - Pausing microphone');
             setIsAyuSpeaking(true);
             
             if (window.pauseDeepgram) {
@@ -254,7 +311,6 @@ export default function Home() {
             }
             
             speakText(data.message, () => {
-              console.log('✅ Speaking finished - Resuming microphone');
               setIsAyuSpeaking(false);
               
               if (window.resumeDeepgram) {
@@ -262,8 +318,6 @@ export default function Home() {
               }
             });
           }
-        } else {
-          console.log('🔇 Voice mode OFF - silent');
         }
       }
     } catch (error) {
@@ -285,7 +339,7 @@ export default function Home() {
     );
   }
 
-  if (!user && !showChat) {
+  if (!user) {
     return (
       <>
         <Head>
@@ -317,36 +371,60 @@ export default function Home() {
     );
   }
 
-  if (!user && showChat) {
-    router.push('/login');
-    return null;
-  }
-
   if (user && !showChat) {
     return (
       <>
         <Head>
-          <title>AyuTalks - Your Space to Reflect</title>
-          <meta name="description" content="A mindful space for everyday conversations" />
+          <title>AyuTalks - Welcome Back</title>
+          <meta name="description" content="Choose your conversation style" />
           <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         </Head>
         <div style={styles.container}>
-          <div style={styles.hero}>
-            <h1 style={styles.title}>AyuTalks</h1>
-            <p style={styles.subtitle}>
-              Welcome back, {user.email.split('@')[0]}!
-            </p>
-            <p style={styles.description}>
-              Your space to pause, talk, and reconnect with yourself.
-            </p>
-            <div style={styles.buttonGroup}>
-              <button onClick={startConversation} style={styles.button}>
-                Start Talking
-              </button>
-              <button onClick={handleLogout} style={{...styles.button, ...styles.buttonSecondary}}>
-                Logout
-              </button>
+          <div style={styles.welcomeContainer}>
+            <h1 style={styles.welcomeTitle}>Welcome back!</h1>
+            <p style={styles.welcomeSubtitle}>Ready to chat with Ayu?</p>
+            
+            <div style={styles.optionsGrid}>
+              <div style={styles.optionCard}>
+                <div style={styles.cardIcon}>🧠</div>
+                <h2 style={styles.cardTitle}>Mechanics of Mind</h2>
+                <p style={styles.cardSubtitle}>Transformation to Happiness That Stays</p>
+                <ul style={styles.featureList}>
+                  <li>⏱️ Guided sessions (20-60 min)</li>
+                  <li>🎯 Structured exploration</li>
+                  <li>📊 Track your progress</li>
+                  <li>💡 Discover how your mind works</li>
+                </ul>
+                <button 
+                  style={styles.cardButton}
+                  onClick={() => startConversation(true)}
+                >
+                  Start Mechanics Session
+                </button>
+              </div>
+
+              <div style={styles.optionCard}>
+                <div style={styles.cardIcon}>💬</div>
+                <h2 style={styles.cardTitle}>Daily Conversations</h2>
+                <p style={styles.cardSubtitle}>Talk with Ayu about anything</p>
+                <ul style={styles.featureList}>
+                  <li>🗣️ Share your thoughts and feelings</li>
+                  <li>🤗 Get emotional support</li>
+                  <li>🎤 Use voice mode for natural conversation</li>
+                  <li>⏰ Chat as long as you need</li>
+                </ul>
+                <button 
+                  style={{...styles.cardButton, ...styles.casualButton}}
+                  onClick={() => startConversation(false)}
+                >
+                  Start Chatting with Ayu
+                </button>
+              </div>
             </div>
+
+            <button style={styles.logoutButtonBottom} onClick={handleLogout}>
+              Logout
+            </button>
           </div>
         </div>
       </>
@@ -361,7 +439,11 @@ export default function Home() {
       </Head>
       <div style={chatStyles.container}>
         <div style={chatStyles.header}>
-          <button onClick={() => { setShowChat(false); }} style={chatStyles.backButton}>
+          <button onClick={() => { 
+            setShowChat(false); 
+            setAutoStartSession(false);
+            setSessionModeEnabled(false);
+          }} style={chatStyles.backButton}>
             ← Back
           </button>
           <h2 style={chatStyles.title}>AyuTalks</h2>
@@ -390,18 +472,17 @@ export default function Home() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* MOBILE-FIXED: Session button with proper visibility */}
-        {user && conversationId && (
+        {user && conversationId && sessionModeEnabled && (
           <div style={chatStyles.sessionContainer}>
             <MindStudySession
               userId={user.id}
               conversationId={conversationId}
+              autoStart={autoStartSession}
               onSessionStateChange={(active, data) => {
                 setSessionActive(active);
                 setSessionData(data);
-                console.log('🧘 Session state changed:', { active, data });
+                if (!active) setAutoStartSession(false);
               }}
-              isPremium={false}
             />
           </div>
         )}
@@ -409,25 +490,18 @@ export default function Home() {
         <div style={chatStyles.inputContainer}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', width: '100%', alignItems: 'center' }}>
             <VoiceInput
-              onTranscript={(transcript) => {
-                sendMessage(transcript);
-              }}
+              onTranscript={(transcript) => sendMessage(transcript)}
               disabled={isLoading || isAyuSpeaking}
               onModeChange={(isActive) => {
-                console.log('🎤 Voice mode callback:', isActive);
                 setVoiceModeActive(isActive);
                 voiceModeRef.current = isActive;
                 
                 if (isActive && typeof window !== 'undefined') {
                   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
                   if (isIOS) {
-                    console.log('📱 iOS detected - pre-warming speech synthesis');
                     const warmup = new SpeechSynthesisUtterance('');
                     warmup.volume = 0;
-                    warmup.rate = 1;
-                    warmup.pitch = 1;
                     window.speechSynthesis.speak(warmup);
-                    console.log('✅ Speech synthesis pre-warmed for iOS');
                   }
                 }
               }}
@@ -519,17 +593,96 @@ const styles = {
     color: 'white',
     border: '2px solid white',
   },
+  welcomeContainer: {
+    textAlign: 'center',
+    color: 'white',
+    maxWidth: '1200px',
+    width: '100%',
+    padding: '2rem',
+  },
+  welcomeTitle: {
+    fontSize: 'clamp(2rem, 6vw, 3rem)',
+    fontWeight: '700',
+    marginBottom: '0.5rem',
+  },
+  welcomeSubtitle: {
+    fontSize: 'clamp(1rem, 3vw, 1.3rem)',
+    marginBottom: '3rem',
+    opacity: 0.9,
+  },
+  optionsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+    gap: '2rem',
+    marginBottom: '2rem',
+  },
+  optionCard: {
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    borderRadius: '20px',
+    padding: '2rem',
+    textAlign: 'center',
+    boxShadow: '0 8px 30px rgba(0,0,0,0.2)',
+  },
+  cardIcon: {
+    fontSize: '3rem',
+    marginBottom: '1rem',
+  },
+  cardTitle: {
+    color: '#667eea',
+    fontSize: '1.5rem',
+    fontWeight: '700',
+    marginBottom: '0.5rem',
+  },
+  cardSubtitle: {
+    color: '#666',
+    fontSize: '1rem',
+    marginBottom: '1.5rem',
+    fontStyle: 'italic',
+  },
+  featureList: {
+    listStyle: 'none',
+    padding: 0,
+    textAlign: 'left',
+    color: '#333',
+    marginBottom: '1.5rem',
+    fontSize: '0.95rem',
+    lineHeight: '2',
+  },
+  cardButton: {
+    backgroundColor: '#667eea',
+    color: 'white',
+    border: 'none',
+    padding: '1rem 2rem',
+    borderRadius: '25px',
+    fontSize: '1rem',
+    fontWeight: '600',
+    cursor: 'pointer',
+    width: '100%',
+  },
+  casualButton: {
+    backgroundColor: '#764ba2',
+  },
+  logoutButtonBottom: {
+    backgroundColor: 'transparent',
+    color: 'white',
+    border: '2px solid white',
+    padding: '0.75rem 2rem',
+    borderRadius: '20px',
+    fontSize: '1rem',
+    fontWeight: '600',
+    cursor: 'pointer',
+    marginTop: '1rem',
+  },
 };
 
 const chatStyles = {
   container: {
     minHeight: '100vh',
-    minHeight: '100dvh', // MOBILE FIX: Dynamic viewport height
+    minHeight: '100dvh',
     display: 'flex',
     flexDirection: 'column',
     background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
     overflow: 'hidden',
-    position: 'relative',
   },
   header: {
     backgroundColor: 'rgba(255,255,255,0.1)',
@@ -539,7 +692,6 @@ const chatStyles = {
     justifyContent: 'space-between',
     backdropFilter: 'blur(10px)',
     flexShrink: 0,
-    zIndex: 10,
   },
   backButton: {
     backgroundColor: 'white',
@@ -570,12 +722,11 @@ const chatStyles = {
     flex: 1,
     padding: '1rem',
     overflowY: 'auto',
-    overflowX: 'hidden',
     display: 'flex',
     flexDirection: 'column',
     gap: '1rem',
     WebkitOverflowScrolling: 'touch',
-    minHeight: 0, // MOBILE FIX: Allow flex to shrink properly
+    minHeight: 0,
   },
   message: {
     padding: '1rem 1.25rem',
@@ -598,13 +749,11 @@ const chatStyles = {
     alignSelf: 'flex-start',
     borderBottomLeftRadius: '4px',
   },
-  // MOBILE FIX: Dedicated container for session button
   sessionContainer: {
     padding: '0.75rem 1rem',
     backgroundColor: 'rgba(255,255,255,0.05)',
     borderTop: '1px solid rgba(255,255,255,0.1)',
     flexShrink: 0,
-    zIndex: 5,
   },
   inputContainer: {
     padding: '1rem',
@@ -614,9 +763,7 @@ const chatStyles = {
     flexDirection: 'column',
     gap: '0.75rem',
     flexShrink: 0,
-    alignItems: 'stretch',
     borderTop: '1px solid rgba(255,255,255,0.1)',
-    zIndex: 10,
   },
   input: {
     flex: 1,
@@ -635,7 +782,6 @@ const chatStyles = {
     borderRadius: '25px',
     cursor: 'pointer',
     fontWeight: '600',
-    transition: 'opacity 0.2s',
     fontSize: 'clamp(0.9rem, 2.5vw, 1rem)',
     whiteSpace: 'nowrap',
   },
